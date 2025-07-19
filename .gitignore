@@ -1,0 +1,88 @@
+# Bases de données SQLite
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Fichiers de sauvegarde SQLite
+*.backup
+*.bak
+*.dump
+
+# Logs et fichiers temporaires
+*.log
+*.tmp
+*.temp
+temp/
+logs/
+
+# Environnements virtuels Python
+venv/
+env/
+.env
+.venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# IDEs et éditeurs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Node.js (si vous utilisez des outils JS)
+node_modules/
+npm-debug.log
+yarn-error.log
+package-lock.json
+yarn.lock
+
+# Fichiers de configuration sensibles
+config.ini
+settings.json
+secrets.json
+.env.local
+.env.production
+
+# Fichiers de build et distribution
+build/
+dist/
+target/
+*.exe
+*.dmg
+*.pkg
+
+# Fichiers de tests
+test_results/
+coverage/
+.coverage
+.pytest_cache/
+
+# Documentation générée
+docs/_build/
+site/
+
+# Fichiers spécifiques au projet
+data/
+samples/large_datasets/
+exports/
+imports/
+
+# Fichiers système
+.Trash-*
+$RECYCLE.BIN/
+Desktop.ini
+
+#Fichier texte
+*.txt
+*.kate-swp
