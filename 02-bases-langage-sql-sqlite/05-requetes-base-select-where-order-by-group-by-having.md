@@ -148,9 +148,9 @@ INSERT INTO ventes (livre_id, date_vente, quantite, prix_unitaire, client_nom) V
 
 -- Vérifier notre structure
 .tables
-SELECT COUNT(*) as nb_auteurs FROM auteurs;
-SELECT COUNT(*) as nb_livres FROM livres;
-SELECT COUNT(*) as nb_ventes FROM ventes;
+SELECT COUNT(*) as nb_auteurs FROM auteurs;  
+SELECT COUNT(*) as nb_livres FROM livres;  
+SELECT COUNT(*) as nb_ventes FROM ventes;  
 ```
 
 ## SELECT - Choisir les données à récupérer
@@ -180,6 +180,9 @@ SELECT
     pages,
     ROUND(prix / pages * 100, 2) AS "Centimes par page"
 FROM livres;
+-- 💡 Ici prix est REAL et pages est INTEGER : REAL/INTEGER = REAL.
+-- Si les deux étaient INTEGER, il faudrait écrire `prix * 1.0 / pages` pour éviter
+-- la troncature (cf. piège INTEGER/INTEGER vu en 2.1).
 ```
 
 ### 🔢 SELECT avec fonctions et expressions
@@ -190,8 +193,8 @@ SELECT
     UPPER(titre) AS titre_majuscules,
     LENGTH(titre) AS longueur_titre,
     SUBSTR(titre, 1, 20) || '...' AS titre_court
-FROM livres
-WHERE LENGTH(titre) > 20;
+FROM livres  
+WHERE LENGTH(titre) > 20;  
 
 -- Fonctions numériques
 SELECT
@@ -199,14 +202,19 @@ SELECT
     prix,
     ROUND(prix, 0) AS prix_arrondi,
     ABS(prix - 12.00) AS ecart_prix_moyen,
-    MIN(prix, 15.00) AS prix_plafonne
+    MIN(prix, 15.00) AS prix_plafonne   -- MIN scalaire (deux args) ≠ MIN agrégée
 FROM livres;
+-- 💡 SQLite a deux MIN/MAX :
+--    - **scalaires** : MIN(a, b, c, …) → la plus petite des valeurs passées sur la ligne
+--    - **agrégées** : MIN(col) → la plus petite valeur de col sur toutes les lignes du groupe
+-- La distinction se fait par le nombre d'arguments.
 
 -- Fonctions de dates
 SELECT
     titre,
     annee_publication,
-    (2024 - annee_publication) AS age_livre,
+    -- Âge dynamique calculé par rapport à l'année courante
+    CAST(strftime('%Y', 'now') AS INTEGER) - annee_publication AS age_livre,
     CASE
         WHEN annee_publication >= 2000 THEN 'Récent'
         WHEN annee_publication >= 1950 THEN 'Moderne'
@@ -237,19 +245,22 @@ SELECT
 FROM livres;
 
 -- Recommandations basées sur les notes
+-- 💡 Important : l'ordre des WHEN compte ! Le premier qui matche est retenu.
+-- Ici on filtre les cas "peu d'avis" en premier pour qu'ils ne soient pas
+-- masqués par les conditions suivantes.
 SELECT
     titre,
     note_moyenne,
     nombre_avis,
     CASE
+        WHEN nombre_avis < 10 THEN '❓ Peu d''avis'                              -- en premier
         WHEN note_moyenne >= 4.5 AND nombre_avis >= 100 THEN '⭐ Bestseller'
-        WHEN note_moyenne >= 4.0 AND nombre_avis >= 50 THEN '👍 Recommandé'
-        WHEN note_moyenne >= 3.5 THEN '✅ Correct'
-        WHEN nombre_avis < 10 THEN '❓ Peu d''avis'
+        WHEN note_moyenne >= 4.0 AND nombre_avis >= 50  THEN '👍 Recommandé'
+        WHEN note_moyenne >= 3.5                        THEN '✅ Correct'
         ELSE '👎 À éviter'
     END AS recommendation
-FROM livres
-WHERE note_moyenne IS NOT NULL;
+FROM livres  
+WHERE note_moyenne IS NOT NULL;  
 ```
 
 ## WHERE - Filtrer les données
@@ -265,13 +276,13 @@ SELECT titre, auteur_id FROM livres WHERE auteur_id = 5;  -- J.K. Rowling
 SELECT * FROM livres WHERE stock = 0;  -- Livres en rupture
 
 -- Filtres avec opérateurs de comparaison
-SELECT titre, annee_publication
-FROM livres
-WHERE annee_publication >= 2000;
+SELECT titre, annee_publication  
+FROM livres  
+WHERE annee_publication >= 2000;  
 
-SELECT titre, pages
-FROM livres
-WHERE pages BETWEEN 200 AND 500;
+SELECT titre, pages  
+FROM livres  
+WHERE pages BETWEEN 200 AND 500;  
 
 -- Filtres sur texte
 SELECT * FROM auteurs WHERE nationalite = 'Française';
@@ -285,63 +296,63 @@ SELECT * FROM auteurs WHERE nom LIKE 'M%';  -- Noms commençant par M
 
 ```sql
 -- Combinaisons avec AND
-SELECT titre, prix, stock
-FROM livres
-WHERE prix < 15 AND stock > 10;
+SELECT titre, prix, stock  
+FROM livres  
+WHERE prix < 15 AND stock > 10;  
 
-SELECT titre, note_moyenne, nombre_avis
-FROM livres
-WHERE note_moyenne >= 4.5 AND nombre_avis >= 100;
+SELECT titre, note_moyenne, nombre_avis  
+FROM livres  
+WHERE note_moyenne >= 4.5 AND nombre_avis >= 100;  
 
 -- Combinaisons avec OR
-SELECT titre, categorie_id
-FROM livres
-WHERE categorie_id = 2 OR categorie_id = 4;  -- Fantasy ou Dystopie
+SELECT titre, categorie_id  
+FROM livres  
+WHERE categorie_id = 2 OR categorie_id = 4;  -- Fantasy ou Dystopie  
 
-SELECT * FROM auteurs
-WHERE nationalite = 'Française' OR nationalite = 'Britannique';
+SELECT * FROM auteurs  
+WHERE nationalite = 'Française' OR nationalite = 'Britannique';  
 
 -- Utilisation de NOT
-SELECT titre, stock
-FROM livres
-WHERE NOT (stock = 0);  -- Équivalent à stock != 0
+SELECT titre, stock  
+FROM livres  
+WHERE NOT (stock = 0);  -- Équivalent à stock != 0  
 
-SELECT * FROM auteurs
-WHERE date_deces IS NOT NULL;  -- Auteurs décédés
+SELECT * FROM auteurs  
+WHERE date_deces IS NOT NULL;  -- Auteurs décédés  
 
 -- Parenthèses pour la priorité
-SELECT titre, prix, stock, categorie_id
-FROM livres
-WHERE (prix < 10 OR stock > 20) AND categorie_id IN (1, 2);
+SELECT titre, prix, stock, categorie_id  
+FROM livres  
+WHERE (prix < 10 OR stock > 20) AND categorie_id IN (1, 2);  
 ```
 
 ### 📋 Filtres avec IN, EXISTS, NULL
 
 ```sql
 -- Filtre avec IN (liste de valeurs)
-SELECT titre, auteur_id
-FROM livres
-WHERE auteur_id IN (1, 3, 5);  -- Hugo, Orwell, Rowling
+SELECT titre, auteur_id  
+FROM livres  
+WHERE auteur_id IN (1, 3, 5);  -- Hugo, Orwell, Rowling  
 
-SELECT nom FROM editeurs
-WHERE pays IN ('France', 'Royaume-Uni');
+SELECT nom FROM editeurs  
+WHERE pays IN ('France', 'Royaume-Uni');  
 
 -- Filtre avec EXISTS (sous-requête)
-SELECT a.nom, a.prenom
-FROM auteurs a
-WHERE EXISTS (
+SELECT a.nom, a.prenom  
+FROM auteurs a  
+WHERE EXISTS (  
     SELECT 1 FROM livres l
     WHERE l.auteur_id = a.id AND l.prix > 20
 );
 
 -- Gestion des valeurs NULL
-SELECT titre, note_moyenne
-FROM livres
-WHERE note_moyenne IS NULL;
+SELECT titre, note_moyenne  
+FROM livres  
+WHERE note_moyenne IS NULL;  
 
-SELECT nom, date_deces
-FROM auteurs
-WHERE date_deces IS NOT NULL;
+SELECT nom, date_deces  
+FROM auteurs  
+WHERE date_deces IS NOT NULL;  
 
 -- Remplacer NULL par une valeur par défaut
 SELECT
@@ -354,21 +365,22 @@ FROM auteurs;
 
 ```sql
 -- Filtres sur des calculs
-SELECT titre, prix, pages, ROUND(prix/pages*100, 2) AS cout_par_page
-FROM livres
-WHERE prix/pages*100 < 5;  -- Moins de 5 centimes par page
+SELECT titre, prix, pages, ROUND(prix/pages*100, 2) AS cout_par_page  
+FROM livres  
+WHERE prix/pages*100 < 5;  -- Moins de 5 centimes par page  
 
 -- Filtres sur des fonctions de texte
-SELECT * FROM livres
-WHERE LENGTH(titre) > 25;
+SELECT * FROM livres  
+WHERE LENGTH(titre) > 25;  
 
-SELECT * FROM auteurs
-WHERE UPPER(nom) LIKE '%GAR%';
+SELECT * FROM auteurs  
+WHERE UPPER(nom) LIKE '%GAR%';  
 
--- Filtres sur des fonctions de date
-SELECT titre, annee_publication, (2024 - annee_publication) AS age
-FROM livres
-WHERE (2024 - annee_publication) < 30;  -- Livres de moins de 30 ans
+-- Filtres sur des fonctions de date (utiliser l'année courante dynamiquement)
+SELECT titre, annee_publication,
+       CAST(strftime('%Y', 'now') AS INTEGER) - annee_publication AS age
+FROM livres  
+WHERE CAST(strftime('%Y', 'now') AS INTEGER) - annee_publication < 30;  -- Moins de 30 ans  
 
 -- Filtres complexes
 SELECT
@@ -376,12 +388,96 @@ SELECT
     a.nom,
     l.prix,
     l.note_moyenne
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id
-WHERE l.prix BETWEEN 8 AND 15
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  
+WHERE l.prix BETWEEN 8 AND 15  
     AND l.note_moyenne >= 4.0
     AND a.nationalite != 'Française'
     AND l.stock > 5;
+```
+
+## DISTINCT - Éliminer les doublons
+
+### 🎯 SELECT DISTINCT
+
+`DISTINCT` retire les lignes en double du résultat. Attention, le doublon est mesuré sur **toutes les colonnes du SELECT**, pas seulement la première.
+
+```sql
+-- Toutes les nationalités d'auteurs (avec doublons)
+SELECT nationalite FROM auteurs;
+-- Résultat : Française, Française, Britannique, Britannique, Britannique, Colombienne, ...
+
+-- Nationalités UNIQUES
+SELECT DISTINCT nationalite FROM auteurs;
+-- Résultat : Française, Britannique, Colombienne, Japonaise, Italienne
+
+-- ⚠️ DISTINCT s'applique à la combinaison de TOUTES les colonnes
+SELECT DISTINCT nationalite, prenom FROM auteurs;
+-- → un (nationalite, prenom) unique = une ligne
+
+-- DISTINCT dans un agrégat : compter les valeurs DISTINCTES
+SELECT
+    COUNT(*)               AS total_livres,
+    COUNT(DISTINCT auteur_id) AS nb_auteurs_differents
+FROM livres;
+```
+
+> 💡 **DISTINCT vs GROUP BY** : pour un simple « valeurs uniques », les deux marchent. `SELECT DISTINCT col FROM t` ≡ `SELECT col FROM t GROUP BY col`. Mais `GROUP BY` permet aussi d'appliquer des agrégats — préférez-le quand vous combinez plusieurs calculs.
+
+## Opérateurs ensemblistes - UNION, INTERSECT, EXCEPT
+
+SQLite supporte les **3 opérateurs ensemblistes** standards (`UNION`, `INTERSECT`, `EXCEPT`) pour combiner les résultats de plusieurs `SELECT`. `UNION` a deux variantes selon le traitement des doublons :
+
+| Opérateur | Effet | Doublons |
+|-----------|-------|----------|
+| `UNION` | Union de A et B | éliminés |
+| `UNION ALL` | Union de A et B | conservés (plus rapide) |
+| `INTERSECT` | A ∩ B (lignes communes) | éliminés |
+| `EXCEPT` | A \ B (lignes de A absentes de B) | éliminés |
+
+```sql
+-- UNION : auteurs français OU britanniques (sans doublon)
+SELECT nom, nationalite FROM auteurs WHERE nationalite = 'Française'  
+UNION  
+SELECT nom, nationalite FROM auteurs WHERE nationalite = 'Britannique';  
+
+-- UNION ALL : conserve les doublons (plus rapide, à utiliser si on SAIT qu'il n'y a pas de doublon)
+SELECT 'Livres' AS categorie, COUNT(*) AS total FROM livres  
+UNION ALL  
+SELECT 'Auteurs', COUNT(*) FROM auteurs  
+UNION ALL  
+SELECT 'Ventes', COUNT(*) FROM ventes;  
+
+-- INTERSECT : nationalités d'auteurs présentes ET dans la table editeurs.pays
+-- (intersection des ensembles de valeurs)
+SELECT nationalite FROM auteurs  
+INTERSECT  
+SELECT pays FROM editeurs;  
+-- Résultat : 'Française' uniquement (les autres nationalités ne correspondent à aucun pays d'éditeur)
+
+-- EXCEPT : auteurs dont la nationalité n'a PAS d'éditeur associé
+SELECT DISTINCT nationalite FROM auteurs  
+EXCEPT  
+SELECT pays FROM editeurs;  
+```
+
+> ⚠️ **Règles importantes** :  
+> - Les `SELECT` combinés doivent avoir **le même nombre de colonnes** et des **types compatibles**.  
+> - Les noms de colonnes du **premier** `SELECT` sont utilisés pour le résultat.  
+> - **Un seul `ORDER BY`** autorisé, à la **toute fin**, qui s'applique à l'ensemble.  
+> - Pour trier avant la combinaison, encapsuler chaque `SELECT` dans une sous-requête.
+
+```sql
+-- ❌ INTERDIT : ORDER BY au milieu d'un UNION
+SELECT nom FROM auteurs ORDER BY nom  -- erreur !  
+UNION  
+SELECT titre FROM livres;  
+
+-- ✅ ORDER BY uniquement à la fin
+SELECT nom AS valeur FROM auteurs  
+UNION  
+SELECT titre FROM livres  
+ORDER BY valeur;  
 ```
 
 ## ORDER BY - Trier les résultats
@@ -399,9 +495,9 @@ SELECT titre, prix FROM livres ORDER BY prix DESC;
 SELECT nom, prenom FROM auteurs ORDER BY nom, prenom;
 
 -- Tri par plusieurs colonnes
-SELECT titre, annee_publication, prix
-FROM livres
-ORDER BY annee_publication DESC, prix ASC;
+SELECT titre, annee_publication, prix  
+FROM livres  
+ORDER BY annee_publication DESC, prix ASC;  
 ```
 
 ### 🎯 Tri avancé
@@ -413,8 +509,8 @@ SELECT
     prix,
     pages,
     ROUND(prix/pages*100, 2) AS cout_par_page
-FROM livres
-ORDER BY cout_par_page DESC;
+FROM livres  
+ORDER BY cout_par_page DESC;  
 
 -- Tri conditionnel avec CASE
 SELECT
@@ -425,13 +521,13 @@ SELECT
         WHEN stock < 5 THEN 2      -- Stock faible ensuite
         ELSE 3                     -- Autres en dernier
     END AS priorite
-FROM livres
-ORDER BY priorite, stock;
+FROM livres  
+ORDER BY priorite, stock;  
 
 -- Tri avec NULL en dernier
-SELECT nom, date_deces
-FROM auteurs
-ORDER BY date_deces DESC NULLS LAST;
+SELECT nom, date_deces  
+FROM auteurs  
+ORDER BY date_deces DESC NULLS LAST;  
 
 -- Tri par popularité (note et nombre d'avis)
 SELECT
@@ -439,10 +535,10 @@ SELECT
     note_moyenne,
     nombre_avis,
     (note_moyenne * LOG(nombre_avis + 1)) AS score_popularite
-FROM livres
-WHERE note_moyenne IS NOT NULL
-ORDER BY score_popularite DESC
-LIMIT 10;
+FROM livres  
+WHERE note_moyenne IS NOT NULL  
+ORDER BY score_popularite DESC  
+LIMIT 10;  
 ```
 
 ### 📈 Tri avec jointures
@@ -453,28 +549,28 @@ SELECT
     l.titre,
     a.nom || ' ' || a.prenom AS auteur,
     l.prix
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id
-ORDER BY a.nom, a.prenom, l.titre;
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  
+ORDER BY a.nom, a.prenom, l.titre;  
 
 -- Tri par catégorie puis par prix
 SELECT
     l.titre,
     c.nom AS categorie,
     l.prix
-FROM livres l
-JOIN categories c ON l.categorie_id = c.id
-ORDER BY c.nom, l.prix DESC;
+FROM livres l  
+JOIN categories c ON l.categorie_id = c.id  
+ORDER BY c.nom, l.prix DESC;  
 
 -- Top des ventes par chiffre d'affaires
 SELECT
     l.titre,
     SUM(v.quantite * v.prix_unitaire) AS ca_total,
     COUNT(v.id) AS nb_ventes
-FROM livres l
-JOIN ventes v ON l.id = v.livre_id
-GROUP BY l.id, l.titre
-ORDER BY ca_total DESC;
+FROM livres l  
+JOIN ventes v ON l.id = v.livre_id  
+GROUP BY l.id, l.titre  
+ORDER BY ca_total DESC;  
 ```
 
 ## GROUP BY - Regrouper les données
@@ -486,18 +582,18 @@ ORDER BY ca_total DESC;
 SELECT
     categorie_id,
     COUNT(*) AS nombre_livres
-FROM livres
-GROUP BY categorie_id;
+FROM livres  
+GROUP BY categorie_id;  
 
 -- Avec les noms de catégories
 SELECT
     c.nom AS categorie,
     COUNT(l.id) AS nombre_livres,
     AVG(l.prix) AS prix_moyen
-FROM categories c
-LEFT JOIN livres l ON c.id = l.categorie_id
-GROUP BY c.id, c.nom
-ORDER BY nombre_livres DESC;
+FROM categories c  
+LEFT JOIN livres l ON c.id = l.categorie_id  
+GROUP BY c.id, c.nom  
+ORDER BY nombre_livres DESC;  
 
 -- Statistiques par auteur
 SELECT
@@ -507,10 +603,10 @@ SELECT
     MAX(l.prix) AS prix_max,
     AVG(l.prix) AS prix_moyen,
     SUM(l.pages) AS total_pages
-FROM auteurs a
-JOIN livres l ON a.id = l.auteur_id
-GROUP BY a.id, a.nom, a.prenom
-ORDER BY nombre_livres DESC;
+FROM auteurs a  
+JOIN livres l ON a.id = l.auteur_id  
+GROUP BY a.id, a.nom, a.prenom  
+ORDER BY nombre_livres DESC;  
 ```
 
 ### 🔢 Fonctions d'agrégation
@@ -525,8 +621,8 @@ SELECT
     AVG(prix) AS prix_moyen,
     SUM(prix * stock) AS valeur_stock_total,
     ROUND(AVG(note_moyenne), 2) AS note_moyenne_generale
-FROM livres
-WHERE prix IS NOT NULL;
+FROM livres  
+WHERE prix IS NOT NULL;  
 
 -- Statistiques par décennie
 SELECT
@@ -534,12 +630,14 @@ SELECT
     COUNT(*) AS nombre_livres,
     AVG(pages) AS pages_moyennes,
     AVG(prix) AS prix_moyen
-FROM livres
-WHERE annee_publication IS NOT NULL
-GROUP BY (annee_publication / 10) * 10
-ORDER BY decennie;
+FROM livres  
+WHERE annee_publication IS NOT NULL  
+GROUP BY (annee_publication / 10) * 10  
+ORDER BY decennie;  
 
 -- Répartition par tranches de prix
+-- 💡 SQLite (comme PostgreSQL et MySQL) permet de réutiliser l'alias dans GROUP BY,
+-- HAVING et ORDER BY (mais PAS dans WHERE, qui s'évalue avant SELECT).
 SELECT
     CASE
         WHEN prix < 10 THEN 'Moins de 10€'
@@ -549,16 +647,10 @@ SELECT
     END AS tranche_prix,
     COUNT(*) AS nombre_livres,
     ROUND(AVG(pages), 0) AS pages_moyennes
-FROM livres
-WHERE prix IS NOT NULL
-GROUP BY
-    CASE
-        WHEN prix < 10 THEN 'Moins de 10€'
-        WHEN prix < 15 THEN '10-15€'
-        WHEN prix < 20 THEN '15-20€'
-        ELSE 'Plus de 20€'
-    END
-ORDER BY MIN(prix);
+FROM livres  
+WHERE prix IS NOT NULL  
+GROUP BY tranche_prix          -- on réutilise l'alias plutôt que de répéter le CASE  
+ORDER BY MIN(prix);  
 ```
 
 ### 📈 Analyses temporelles avec GROUP BY
@@ -571,11 +663,11 @@ SELECT
     SUM(quantite) AS livres_vendus,
     SUM(quantite * prix_unitaire) AS chiffre_affaires,
     AVG(prix_unitaire) AS prix_moyen
-FROM ventes
-GROUP BY strftime('%Y-%m', date_vente)
-ORDER BY mois;
+FROM ventes  
+GROUP BY strftime('%Y-%m', date_vente)  
+ORDER BY mois;  
 
--- Évolution des publications par décennie
+-- Évolution des publications par décennie (alias réutilisé dans GROUP BY)
 SELECT
     CASE
         WHEN annee_publication < 1900 THEN 'XIXe siècle'
@@ -586,17 +678,11 @@ SELECT
     COUNT(*) AS nombre_livres,
     AVG(pages) AS pages_moyennes,
     GROUP_CONCAT(DISTINCT a.nationalite) AS nationalites
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id
-WHERE annee_publication IS NOT NULL
-GROUP BY
-    CASE
-        WHEN annee_publication < 1900 THEN 'XIXe siècle'
-        WHEN annee_publication < 1950 THEN '1900-1949'
-        WHEN annee_publication < 2000 THEN '1950-1999'
-        ELSE '2000 et plus'
-    END
-ORDER BY MIN(annee_publication);
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  
+WHERE annee_publication IS NOT NULL  
+GROUP BY periode  
+ORDER BY MIN(annee_publication);  
 ```
 
 ## HAVING - Filtrer les groupes
@@ -612,29 +698,29 @@ SELECT
     categorie_id,
     COUNT(*) AS nb_livres,
     AVG(prix) AS prix_moyen
-FROM livres
-WHERE prix > 10  -- Filtre: seulement les livres > 10€
-GROUP BY categorie_id;
+FROM livres  
+WHERE prix > 10  -- Filtre: seulement les livres > 10€  
+GROUP BY categorie_id;  
 
 -- Exemple avec HAVING (filtre les groupes après regroupement)
 SELECT
     categorie_id,
     COUNT(*) AS nb_livres,
     AVG(prix) AS prix_moyen
-FROM livres
-GROUP BY categorie_id
-HAVING COUNT(*) > 2;  -- Filtre: seulement les catégories avec plus de 2 livres
+FROM livres  
+GROUP BY categorie_id  
+HAVING COUNT(*) > 2;  -- Filtre: seulement les catégories avec plus de 2 livres  
 
 -- Combinaison WHERE + HAVING
 SELECT
     categorie_id,
     COUNT(*) AS nb_livres,
     AVG(prix) AS prix_moyen
-FROM livres
-WHERE prix > 5           -- Filtre d'abord les livres > 5€
-GROUP BY categorie_id
-HAVING COUNT(*) > 1      -- Puis garde seulement les catégories avec plus d'1 livre
-ORDER BY prix_moyen DESC;
+FROM livres  
+WHERE prix > 5           -- Filtre d'abord les livres > 5€  
+GROUP BY categorie_id  
+HAVING COUNT(*) > 1      -- Puis garde seulement les catégories avec plus d'1 livre  
+ORDER BY prix_moyen DESC;  
 ```
 
 ### 📊 HAVING avec fonctions d'agrégation
@@ -646,11 +732,11 @@ SELECT
     COUNT(l.id) AS nombre_livres,
     AVG(l.prix) AS prix_moyen,
     SUM(l.pages) AS total_pages
-FROM auteurs a
-JOIN livres l ON a.id = l.auteur_id
-GROUP BY a.id, a.nom, a.prenom
-HAVING COUNT(l.id) > 1  -- Plus d'un livre
-ORDER BY nombre_livres DESC;
+FROM auteurs a  
+JOIN livres l ON a.id = l.auteur_id  
+GROUP BY a.id, a.nom, a.prenom  
+HAVING COUNT(l.id) > 1  -- Plus d'un livre  
+ORDER BY nombre_livres DESC;  
 
 -- Catégories rentables (prix moyen élevé)
 SELECT
@@ -658,11 +744,11 @@ SELECT
     COUNT(l.id) AS nb_livres,
     AVG(l.prix) AS prix_moyen,
     MAX(l.prix) AS prix_max
-FROM categories c
-JOIN livres l ON c.id = l.categorie_id
-GROUP BY c.id, c.nom
-HAVING AVG(l.prix) > 12  -- Prix moyen > 12€
-ORDER BY prix_moyen DESC;
+FROM categories c  
+JOIN livres l ON c.id = l.categorie_id  
+GROUP BY c.id, c.nom  
+HAVING AVG(l.prix) > 12  -- Prix moyen > 12€  
+ORDER BY prix_moyen DESC;  
 
 -- Éditeurs avec gros catalogue
 SELECT
@@ -671,11 +757,11 @@ SELECT
     COUNT(l.id) AS nb_livres,
     AVG(l.note_moyenne) AS note_moyenne,
     SUM(l.stock * l.prix) AS valeur_stock
-FROM editeurs e
-JOIN livres l ON e.id = l.editeur_id
-GROUP BY e.id, e.nom, e.ville
-HAVING COUNT(l.id) >= 2 AND AVG(l.note_moyenne) >= 4.0
-ORDER BY nb_livres DESC;
+FROM editeurs e  
+JOIN livres l ON e.id = l.editeur_id  
+GROUP BY e.id, e.nom, e.ville  
+HAVING COUNT(l.id) >= 2 AND AVG(l.note_moyenne) >= 4.0  
+ORDER BY nb_livres DESC;  
 ```
 
 ### 🔍 HAVING avec conditions complexes
@@ -688,13 +774,13 @@ SELECT
     AVG(l.note_moyenne) AS note_moyenne,
     COUNT(DISTINCT v.id) AS nb_ventes,
     SUM(v.quantite * v.prix_unitaire) AS ca_total
-FROM auteurs a
-JOIN livres l ON a.id = l.auteur_id
-LEFT JOIN ventes v ON l.id = v.livre_id
-WHERE l.note_moyenne IS NOT NULL
-GROUP BY a.id, a.nom, a.prenom
-HAVING AVG(l.note_moyenne) > 4.0 AND COUNT(DISTINCT v.id) > 0
-ORDER BY ca_total DESC;
+FROM auteurs a  
+JOIN livres l ON a.id = l.auteur_id  
+LEFT JOIN ventes v ON l.id = v.livre_id  
+WHERE l.note_moyenne IS NOT NULL  
+GROUP BY a.id, a.nom, a.prenom  
+HAVING AVG(l.note_moyenne) > 4.0 AND COUNT(DISTINCT v.id) > 0  
+ORDER BY ca_total DESC;  
 
 -- Périodes productives (beaucoup de livres ET diversité des auteurs)
 SELECT
@@ -703,11 +789,11 @@ SELECT
     COUNT(DISTINCT auteur_id) AS nb_auteurs,
     AVG(pages) AS pages_moyennes,
     AVG(prix) AS prix_moyen
-FROM livres
-WHERE annee_publication IS NOT NULL
-GROUP BY (annee_publication / 10) * 10
-HAVING COUNT(*) >= 2 AND COUNT(DISTINCT auteur_id) >= 2
-ORDER BY decennie DESC;
+FROM livres  
+WHERE annee_publication IS NOT NULL  
+GROUP BY (annee_publication / 10) * 10  
+HAVING COUNT(*) >= 2 AND COUNT(DISTINCT auteur_id) >= 2  
+ORDER BY decennie DESC;  
 
 -- Mois avec bonnes ventes (volume ET chiffre d'affaires)
 SELECT
@@ -716,10 +802,10 @@ SELECT
     SUM(quantite) AS livres_vendus,
     SUM(quantite * prix_unitaire) AS ca,
     AVG(quantite * prix_unitaire) AS panier_moyen
-FROM ventes
-GROUP BY strftime('%Y-%m', date_vente)
-HAVING SUM(quantite) >= 3 AND SUM(quantite * prix_unitaire) >= 50
-ORDER BY ca DESC;
+FROM ventes  
+GROUP BY strftime('%Y-%m', date_vente)  
+HAVING SUM(quantite) >= 3 AND SUM(quantite * prix_unitaire) >= 50  
+ORDER BY ca DESC;  
 ```
 
 ## Combinaison complète - Requêtes avancées
@@ -744,14 +830,14 @@ SELECT
         WHEN SUM(v.quantite * v.prix_unitaire) < 100 THEN 'Ventes correctes'
         ELSE 'Bonnes ventes'
     END AS performance_commerciale
-FROM auteurs a
-JOIN livres l ON a.id = l.auteur_id
-LEFT JOIN ventes v ON l.id = v.livre_id
-WHERE l.prix IS NOT NULL                    -- WHERE: Filtrer avant regroupement
-GROUP BY a.id, a.nom, a.prenom, a.nationalite
-HAVING COUNT(DISTINCT l.id) >= 1            -- HAVING: Filtrer après regroupement
-ORDER BY chiffre_affaires DESC, note_moyenne DESC  -- ORDER BY: Trier le résultat final
-LIMIT 10;                                   -- LIMIT: Limiter aux 10 premiers
+FROM auteurs a  
+JOIN livres l ON a.id = l.auteur_id  
+LEFT JOIN ventes v ON l.id = v.livre_id  
+WHERE l.prix IS NOT NULL                    -- WHERE: Filtrer avant regroupement  
+GROUP BY a.id, a.nom, a.prenom, a.nationalite  
+HAVING COUNT(DISTINCT l.id) >= 1            -- HAVING: Filtrer après regroupement  
+ORDER BY chiffre_affaires DESC, note_moyenne DESC  -- ORDER BY: Trier le résultat final  
+LIMIT 10;                                   -- LIMIT: Limiter aux 10 premiers  
 
 -- Décomposition de cette requête complexe :
 -- 1. FROM + JOIN : Tables et relations
@@ -767,6 +853,34 @@ LIMIT 10;                                   -- LIMIT: Limiter aux 10 premiers
 
 ```sql
 -- Dashboard commercial mensuel
+-- ⚠️ NOTE — SQLite : group_concat(DISTINCT X, sep) est INTERDIT
+--    (« DISTINCT aggregates must have exactly one argument »).
+--    Avec DISTINCT, le séparateur est forcément ',' par défaut.
+--    Pour conserver un séparateur personnalisé, on pré-calcule le TOP 3 dans une CTE
+--    afin d'éliminer les doublons EN AMONT, puis on applique group_concat sans DISTINCT.
+WITH top_ventes AS (
+    -- Calculer le rang des livres par mois (un livre = une ligne par mois)
+    SELECT
+        v2.livre_id,
+        strftime('%Y-%m', v2.date_vente) AS mois,
+        SUM(v2.quantite) AS ventes_livre,
+        ROW_NUMBER() OVER (
+            PARTITION BY strftime('%Y-%m', v2.date_vente)
+            ORDER BY SUM(v2.quantite) DESC
+        ) AS rang_mois
+    FROM ventes v2
+    GROUP BY v2.livre_id, strftime('%Y-%m', v2.date_vente)
+),
+top_3_par_mois AS (
+    -- Ne garder que le TOP 3 par mois → plus de doublons → plus besoin de DISTINCT
+    SELECT
+        tv.mois,
+        GROUP_CONCAT(l.titre || ' (' || tv.ventes_livre || ')', ', ') AS top_3_livres
+    FROM top_ventes tv
+    JOIN livres l ON l.id = tv.livre_id
+    WHERE tv.rang_mois <= 3
+    GROUP BY tv.mois
+)
 SELECT
     strftime('%Y-%m', v.date_vente) AS mois,
     COUNT(DISTINCT v.client_nom) AS nb_clients_uniques,
@@ -775,33 +889,13 @@ SELECT
     SUM(v.quantite * v.prix_unitaire) AS chiffre_affaires,
     AVG(v.quantite * v.prix_unitaire) AS panier_moyen,
     COUNT(DISTINCT l.categorie_id) AS nb_categories_vendues,
-    -- Top 3 des livres les plus vendus ce mois
-    GROUP_CONCAT(
-        DISTINCT CASE
-            WHEN row_number_par_mois <= 3
-            THEN l.titre || ' (' || ventes_livre || ')'
-        END,
-        ', '
-    ) AS top_3_livres
-FROM ventes v
-JOIN livres l ON v.livre_id = l.id
-JOIN (
-    -- Sous-requête pour calculer le rang des livres par mois
-    SELECT
-        v2.livre_id,
-        strftime('%Y-%m', v2.date_vente) AS mois,
-        SUM(v2.quantite) AS ventes_livre,
-        ROW_NUMBER() OVER (
-            PARTITION BY strftime('%Y-%m', v2.date_vente)
-            ORDER BY SUM(v2.quantite) DESC
-        ) AS row_number_par_mois
-    FROM ventes v2
-    GROUP BY v2.livre_id, strftime('%Y-%m', v2.date_vente)
-) top_ventes ON v.livre_id = top_ventes.livre_id
-    AND strftime('%Y-%m', v.date_vente) = top_ventes.mois
-GROUP BY strftime('%Y-%m', v.date_vente)
-HAVING COUNT(v.id) > 0
-ORDER BY mois DESC;
+    t3.top_3_livres
+FROM ventes v  
+JOIN livres l ON v.livre_id = l.id  
+LEFT JOIN top_3_par_mois t3 ON t3.mois = strftime('%Y-%m', v.date_vente)  
+GROUP BY strftime('%Y-%m', v.date_vente), t3.top_3_livres  
+HAVING COUNT(v.id) > 0  
+ORDER BY mois DESC;  
 
 -- Analyse de la concurrence par catégorie
 SELECT
@@ -821,16 +915,18 @@ SELECT
     -- Performance commerciale
     COALESCE(SUM(v.quantite), 0) AS total_vendus,
     COALESCE(SUM(v.quantite * v.prix_unitaire), 0) AS ca_categorie
-FROM categories c
-LEFT JOIN livres l ON c.id = l.categorie_id
-LEFT JOIN ventes v ON l.id = v.livre_id
-WHERE l.id IS NOT NULL  -- Seulement les catégories avec des livres
-GROUP BY c.id, c.nom
-HAVING COUNT(l.id) > 0
-ORDER BY ca_categorie DESC, note_moyenne_categorie DESC;
+FROM categories c  
+LEFT JOIN livres l ON c.id = l.categorie_id  
+LEFT JOIN ventes v ON l.id = v.livre_id  
+WHERE l.id IS NOT NULL  -- Seulement les catégories avec des livres  
+GROUP BY c.id, c.nom  
+HAVING COUNT(l.id) > 0  
+ORDER BY ca_categorie DESC, note_moyenne_categorie DESC;  
 ```
 
 ### 🔍 Requêtes d'analyse avec fenêtres (Window Functions)
+
+> ℹ️ Les **window functions** sont un sujet plus avancé, normalement traité au **module 4.3**. On en donne un aperçu ici car elles sont devenues incontournables — depuis SQLite **3.25 (2018)**. Ne vous inquiétez pas si tout n'est pas clair immédiatement : le module 4 reprendra chaque fonction en détail.
 
 ```sql
 -- Classement des livres avec fonctions de fenêtre
@@ -856,11 +952,11 @@ SELECT
     ) AS pct_prix_categorie,
     -- Numéro de ligne pour pagination
     ROW_NUMBER() OVER (ORDER BY l.note_moyenne DESC, l.nombre_avis DESC) AS numero_ligne
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id
-JOIN categories c ON l.categorie_id = c.id
-WHERE l.prix IS NOT NULL AND l.note_moyenne IS NOT NULL
-ORDER BY rang_note_global, rang_prix_categorie;
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  
+JOIN categories c ON l.categorie_id = c.id  
+WHERE l.prix IS NOT NULL AND l.note_moyenne IS NOT NULL  
+ORDER BY rang_note_global, rang_prix_categorie;  
 
 -- Évolution temporelle des ventes
 SELECT
@@ -888,9 +984,9 @@ SELECT
     -- Jour précédent et suivant
     LAG(v.quantite * v.prix_unitaire, 1) OVER (ORDER BY v.date_vente) AS ca_precedent,
     LEAD(v.quantite * v.prix_unitaire, 1) OVER (ORDER BY v.date_vente) AS ca_suivant
-FROM ventes v
-JOIN livres l ON v.livre_id = l.id
-ORDER BY v.date_vente, v.id;
+FROM ventes v  
+JOIN livres l ON v.livre_id = l.id  
+ORDER BY v.date_vente, v.id;  
 ```
 
 ### 🎯 Sous-requêtes et requêtes corrélées
@@ -910,10 +1006,10 @@ SELECT
     ROUND(l.prix - (SELECT AVG(l2.prix)
                     FROM livres l2
                     WHERE l2.categorie_id = l.categorie_id), 2) AS ecart_moyenne
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id
-JOIN categories c ON l.categorie_id = c.id
-WHERE l.prix > (
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  
+JOIN categories c ON l.categorie_id = c.id  
+WHERE l.prix > (  
     SELECT AVG(l3.prix)
     FROM livres l3
     WHERE l3.categorie_id = l.categorie_id
@@ -926,17 +1022,17 @@ SELECT
     COUNT(l.id) AS nb_livres,
     MIN(l.note_moyenne) AS note_minimum,
     AVG(l.note_moyenne) AS note_moyenne_auteur
-FROM auteurs a
-JOIN livres l ON a.id = l.auteur_id
-WHERE NOT EXISTS (
+FROM auteurs a  
+JOIN livres l ON a.id = l.auteur_id  
+WHERE NOT EXISTS (  
     -- Sous-requête corrélée : aucun livre mal noté
     SELECT 1
     FROM livres l2
     WHERE l2.auteur_id = a.id
     AND (l2.note_moyenne < 4.0 OR l2.note_moyenne IS NULL)
 )
-GROUP BY a.id, a.nom, a.prenom
-ORDER BY note_moyenne_auteur DESC;
+GROUP BY a.id, a.nom, a.prenom  
+ORDER BY note_moyenne_auteur DESC;  
 
 -- Livres bestsellers de leur mois de vente
 SELECT DISTINCT
@@ -945,10 +1041,10 @@ SELECT DISTINCT
     v.date_vente,
     mois_ventes.total_vendus_mois,
     mois_ventes.max_vendus_livre_mois
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id
-JOIN ventes v ON l.id = v.livre_id
-JOIN (
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  
+JOIN ventes v ON l.id = v.livre_id  
+JOIN (  
     -- Sous-requête : statistiques par mois
     SELECT
         strftime('%Y-%m', v2.date_vente) AS mois,
@@ -988,10 +1084,10 @@ SELECT
     l.titre,
     a.nom,
     (SELECT COUNT(*) FROM ventes v WHERE v.livre_id = l.id) AS nb_ventes
-FROM livres l, auteurs a
-WHERE l.auteur_id = a.id
-AND LENGTH(l.titre) > 10
-ORDER BY (SELECT SUM(v.quantite) FROM ventes v WHERE v.livre_id = l.id) DESC;
+FROM livres l, auteurs a  
+WHERE l.auteur_id = a.id  
+AND LENGTH(l.titre) > 10  
+ORDER BY (SELECT SUM(v.quantite) FROM ventes v WHERE v.livre_id = l.id) DESC;  
 
 -- ✅ Requête optimisée
 SELECT
@@ -999,9 +1095,9 @@ SELECT
     a.nom,
     COALESCE(v_stats.nb_ventes, 0) AS nb_ventes,
     COALESCE(v_stats.total_quantite, 0) AS total_vendus
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id  -- JOIN explicite
-LEFT JOIN (
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  -- JOIN explicite  
+LEFT JOIN (  
     -- Pré-calculer les statistiques de vente
     SELECT
         livre_id,
@@ -1010,8 +1106,8 @@ LEFT JOIN (
     FROM ventes
     GROUP BY livre_id
 ) v_stats ON l.id = v_stats.livre_id
-WHERE LENGTH(l.titre) > 10  -- Filtre précoce
-ORDER BY total_vendus DESC;
+WHERE LENGTH(l.titre) > 10  -- Filtre précoce  
+ORDER BY total_vendus DESC;  
 
 -- Index recommandés pour cette requête :
 -- CREATE INDEX idx_livres_auteur ON livres(auteur_id);
@@ -1028,10 +1124,10 @@ SELECT
     a.nom AS auteur,
     l.prix,
     l.note_moyenne
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id
-ORDER BY l.note_moyenne DESC, l.id
-LIMIT 10 OFFSET 20;  -- Page 3 (20 = 2 * 10)
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  
+ORDER BY l.note_moyenne DESC, l.id  
+LIMIT 10 OFFSET 20;  -- Page 3 (20 = 2 * 10)  
 
 -- Pagination par curseur (plus efficace pour grandes tables)
 SELECT
@@ -1040,11 +1136,11 @@ SELECT
     l.prix,
     l.note_moyenne,
     l.id
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id
-WHERE (l.note_moyenne, l.id) < (4.3, 145)  -- Derniers valeurs de la page précédente
-ORDER BY l.note_moyenne DESC, l.id DESC
-LIMIT 10;
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  
+WHERE (l.note_moyenne, l.id) < (4.3, 145)  -- Derniers valeurs de la page précédente  
+ORDER BY l.note_moyenne DESC, l.id DESC  
+LIMIT 10;  
 
 -- Comptage total pour la pagination (optimisé)
 SELECT
@@ -1052,11 +1148,11 @@ SELECT
     l.titre,
     a.nom AS auteur,
     l.prix
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id
-WHERE l.prix BETWEEN 10 AND 20
-ORDER BY l.prix
-LIMIT 10 OFFSET 0;
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  
+WHERE l.prix BETWEEN 10 AND 20  
+ORDER BY l.prix  
+LIMIT 10 OFFSET 0;  
 ```
 
 ### 🔍 Requêtes de diagnostic et maintenance
@@ -1066,26 +1162,26 @@ LIMIT 10 OFFSET 0;
 SELECT
     'Livres sans prix' AS probleme,
     COUNT(*) AS nombre
-FROM livres
-WHERE prix IS NULL
-UNION ALL
-SELECT
+FROM livres  
+WHERE prix IS NULL  
+UNION ALL  
+SELECT  
     'Livres sans note',
     COUNT(*)
-FROM livres
-WHERE note_moyenne IS NULL
-UNION ALL
-SELECT
+FROM livres  
+WHERE note_moyenne IS NULL  
+UNION ALL  
+SELECT  
     'Livres sans stock',
     COUNT(*)
-FROM livres
-WHERE stock = 0
-UNION ALL
-SELECT
+FROM livres  
+WHERE stock = 0  
+UNION ALL  
+SELECT  
     'Auteurs sans livres',
     COUNT(*)
-FROM auteurs a
-WHERE NOT EXISTS (SELECT 1 FROM livres l WHERE l.auteur_id = a.id);
+FROM auteurs a  
+WHERE NOT EXISTS (SELECT 1 FROM livres l WHERE l.auteur_id = a.id);  
 
 -- Détection des outliers (prix anormaux)
 SELECT
@@ -1094,8 +1190,8 @@ SELECT
     (SELECT AVG(prix) FROM livres WHERE prix IS NOT NULL) AS prix_moyen_global,
     (SELECT AVG(prix) FROM livres l2 WHERE l2.categorie_id = l.categorie_id) AS prix_moyen_categorie,
     ABS(prix - (SELECT AVG(prix) FROM livres l3 WHERE l3.categorie_id = l.categorie_id)) AS ecart_absolu
-FROM livres l
-WHERE prix IS NOT NULL
+FROM livres l  
+WHERE prix IS NOT NULL  
     AND ABS(prix - (SELECT AVG(prix) FROM livres l4 WHERE l4.categorie_id = l.categorie_id)) >
         (SELECT 2 * AVG(ABS(prix - prix_moy))
          FROM (SELECT prix, AVG(prix) OVER() AS prix_moy FROM livres WHERE prix IS NOT NULL))
@@ -1106,17 +1202,17 @@ SELECT
     'Livres avec auteur inexistant' AS probleme,
     COUNT(*) AS nombre,
     GROUP_CONCAT(DISTINCT l.auteur_id) AS ids_problematiques
-FROM livres l
-LEFT JOIN auteurs a ON l.auteur_id = a.id
-WHERE a.id IS NULL
-UNION ALL
-SELECT
+FROM livres l  
+LEFT JOIN auteurs a ON l.auteur_id = a.id  
+WHERE a.id IS NULL  
+UNION ALL  
+SELECT  
     'Ventes avec livre inexistant',
     COUNT(*),
     GROUP_CONCAT(DISTINCT v.livre_id)
-FROM ventes v
-LEFT JOIN livres l ON v.livre_id = l.id
-WHERE l.id IS NULL;
+FROM ventes v  
+LEFT JOIN livres l ON v.livre_id = l.id  
+WHERE l.id IS NULL;  
 ```
 
 ## 🎯 Exercice pratique final - Tableau de bord complet
@@ -1127,27 +1223,29 @@ WHERE l.id IS NULL;
 -- === TABLEAU DE BORD COMMERCIAL ===
 
 -- 1. Vue d'ensemble générale
-SELECT 'RÉSUMÉ GÉNÉRAL' AS section, NULL AS detail, NULL AS valeur
-UNION ALL
-SELECT '', 'Nombre total de livres au catalogue', COUNT(*)::TEXT FROM livres
-UNION ALL
-SELECT '', 'Nombre d''auteurs', COUNT(*)::TEXT FROM auteurs
-UNION ALL
-SELECT '', 'Nombre de catégories', COUNT(*)::TEXT FROM categories
-UNION ALL
-SELECT '', 'Valeur totale du stock', ROUND(SUM(prix * stock), 2)::TEXT || '€' FROM livres WHERE prix IS NOT NULL
-UNION ALL
-SELECT '', 'Chiffre d''affaires total', ROUND(SUM(quantite * prix_unitaire), 2)::TEXT || '€' FROM ventes;
+-- ⚠️ La syntaxe `valeur::TEXT` est propre à PostgreSQL ; en SQLite, utilisez CAST(valeur AS TEXT)
+-- (ou laissez la concaténation `||` faire la conversion implicite vers TEXT)
+SELECT 'RÉSUMÉ GÉNÉRAL' AS section, NULL AS detail, NULL AS valeur  
+UNION ALL  
+SELECT '', 'Nombre total de livres au catalogue', CAST(COUNT(*) AS TEXT) FROM livres  
+UNION ALL  
+SELECT '', 'Nombre d''auteurs', CAST(COUNT(*) AS TEXT) FROM auteurs  
+UNION ALL  
+SELECT '', 'Nombre de catégories', CAST(COUNT(*) AS TEXT) FROM categories  
+UNION ALL  
+SELECT '', 'Valeur totale du stock', CAST(ROUND(SUM(prix * stock), 2) AS TEXT) || '€' FROM livres WHERE prix IS NOT NULL  
+UNION ALL  
+SELECT '', 'Chiffre d''affaires total', CAST(ROUND(SUM(quantite * prix_unitaire), 2) AS TEXT) || '€' FROM ventes;  
 
 -- 2. Top 5 des bestsellers
 SELECT 'TOP BESTSELLERS' AS section,
        CAST(ROW_NUMBER() OVER (ORDER BY SUM(v.quantite) DESC) AS TEXT) || '. ' || l.titre AS detail,
-       SUM(v.quantite)::TEXT || ' exemplaires vendus' AS valeur
-FROM livres l
-JOIN ventes v ON l.id = v.livre_id
-GROUP BY l.id, l.titre
-ORDER BY SUM(v.quantite) DESC
-LIMIT 5;
+       CAST(SUM(v.quantite) AS TEXT) || ' exemplaires vendus' AS valeur
+FROM livres l  
+JOIN ventes v ON l.id = v.livre_id  
+GROUP BY l.id, l.titre  
+ORDER BY SUM(v.quantite) DESC  
+LIMIT 5;  
 
 -- 3. Analyse par catégorie
 WITH stats_categories AS (
@@ -1170,8 +1268,8 @@ SELECT
     'CA: ' || ROUND(ca, 2) || '€ | ' ||
     'Vendus: ' || total_vendus || ' | ' ||
     'Note: ' || ROUND(note_moyenne, 1) || '/5' AS valeur
-FROM stats_categories
-ORDER BY ca DESC;
+FROM stats_categories  
+ORDER BY ca DESC;  
 
 -- 4. Évolution temporelle
 WITH ventes_mensuelles AS (
@@ -1186,9 +1284,9 @@ WITH ventes_mensuelles AS (
 SELECT
     'ÉVOLUTION MENSUELLE' AS section,
     mois AS detail,
-    ca_mois::TEXT || '€ (' || livres_vendus || ' livres, ' || clients_uniques || ' clients)' AS valeur
-FROM ventes_mensuelles
-ORDER BY mois DESC;
+    CAST(ca_mois AS TEXT) || '€ (' || livres_vendus || ' livres, ' || clients_uniques || ' clients)' AS valeur
+FROM ventes_mensuelles  
+ORDER BY mois DESC;  
 
 -- 5. Alertes stock
 SELECT 'ALERTES STOCK' AS section,
@@ -1197,10 +1295,10 @@ SELECT 'ALERTES STOCK' AS section,
            WHEN stock < 5 THEN '🟡 FAIBLE: ' || titre || ' (' || stock || ' restants)'
            ELSE '🟢 OK: ' || titre
        END AS detail,
-       stock::TEXT AS valeur
-FROM livres
-WHERE stock < 10
-ORDER BY stock, titre;
+       CAST(stock AS TEXT) AS valeur
+FROM livres  
+WHERE stock < 10  
+ORDER BY stock, titre;  
 
 -- 6. Analyse de rentabilité par auteur
 WITH rentabilite_auteurs AS (
@@ -1218,11 +1316,11 @@ WITH rentabilite_auteurs AS (
 SELECT
     'RENTABILITÉ AUTEURS' AS section,
     auteur AS detail,
-    ROUND(ca_auteur, 2)::TEXT || '€ (' || nb_livres || ' livres, note: ' || ROUND(note_moyenne, 1) || ')' AS valeur
-FROM rentabilite_auteurs
-WHERE ca_auteur > 0
-ORDER BY ca_auteur DESC
-LIMIT 5;
+    CAST(ROUND(ca_auteur, 2) AS TEXT) || '€ (' || nb_livres || ' livres, note: ' || ROUND(note_moyenne, 1) || ')' AS valeur
+FROM rentabilite_auteurs  
+WHERE ca_auteur > 0  
+ORDER BY ca_auteur DESC  
+LIMIT 5;  
 
 -- 7. Recommandations automatiques
 SELECT 'RECOMMANDATIONS' AS section,
@@ -1274,15 +1372,22 @@ ORDER BY action_type, titre;
 
 ### ✅ Maîtrise des clauses SELECT
 
-**ORDER des clauses (toujours respecter) :**
-1. **SELECT** - Quelles colonnes récupérer
-2. **FROM** - Table(s) source
-3. **JOIN** - Relations entre tables
-4. **WHERE** - Filtres sur les lignes individuelles
-5. **GROUP BY** - Regroupement des données
-6. **HAVING** - Filtres sur les groupes
-7. **ORDER BY** - Tri des résultats
-8. **LIMIT** - Limitation du nombre de résultats
+**Ordre syntaxique** (l'ordre dans lequel vous écrivez la requête) :
+```sql
+SELECT … FROM … [JOIN …] [WHERE …] [GROUP BY …] [HAVING …] [ORDER BY …] [LIMIT …]
+```
+
+**Ordre logique d'évaluation** (l'ordre dans lequel le moteur exécute) :
+1. **FROM** + **JOIN** — déterminer les tables et les jointures
+2. **WHERE** — filtrer les lignes individuelles
+3. **GROUP BY** — regrouper
+4. **HAVING** — filtrer les groupes (après agrégation)
+5. **SELECT** — calculer les colonnes finales (y compris les agrégats)
+6. **DISTINCT** — éliminer les doublons
+7. **ORDER BY** — trier
+8. **LIMIT** / **OFFSET** — découper
+
+> 💡 Cette différence explique pourquoi un alias défini dans `SELECT` n'est pas utilisable dans `WHERE` (qui s'exécute avant), mais l'est dans `ORDER BY` (qui s'exécute après).
 
 ### 🎯 Checklist des bonnes pratiques
 
@@ -1350,4 +1455,4 @@ ORDER BY action_type, titre;
 
 **🎯 Vous maîtrisez maintenant** les requêtes SQLite ! Vous pouvez interroger efficacement vos données et en extraire des insights précieux pour vos applications et analyses.
 
-⏭️
+⏭️ [Module 3 : Conception et modélisation avancée](/03-conception-modelisation-avancee/README.md)

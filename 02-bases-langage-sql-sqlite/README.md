@@ -2,228 +2,117 @@
 
 # Module 2 : Bases du langage SQL avec SQLite
 
+> **Niveau** : 🟢 Débutant · **Durée estimée** : 4 à 6 heures de lecture + manipulation · **Prérequis** : Module 1 terminé
+
 ## Objectifs du module
 
 À l'issue de ce module, vous serez capable de :
 
-- Maîtriser les 5 types de données spécifiques à SQLite et leur utilisation pratique
-- Créer et gérer des bases de données SQLite de manière autonome
-- Effectuer toutes les opérations CRUD (Create, Read, Update, Delete) avec confiance
-- Implémenter et comprendre les contraintes essentielles (PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK)
-- Construire des requêtes efficaces avec SELECT, WHERE, ORDER BY, GROUP BY et HAVING
-- Appliquer les bonnes pratiques SQL dans le contexte spécifique de SQLite
+- ✅ Maîtriser les **5 classes de stockage** de SQLite (NULL, INTEGER, REAL, TEXT, BLOB) et le concept d'**affinité de type**
+- ✅ Créer et gérer des bases de données SQLite : structure, métadonnées, sauvegarde, multi-bases
+- ✅ Effectuer toutes les opérations **CRUD** (`INSERT`, `SELECT`, `UPDATE`, `DELETE`) avec confiance
+- ✅ Implémenter les contraintes essentielles : `PRIMARY KEY`, `FOREIGN KEY`, `UNIQUE`, `CHECK`
+- ✅ Construire des requêtes efficaces avec `SELECT`, `WHERE`, `ORDER BY`, `GROUP BY`, `HAVING`
+- ✅ Connaître les **pièges spécifiques à SQLite** : division entière, NULL, types dynamiques, sous-requêtes interdites dans CHECK, etc.
 
 ## Prérequis
 
-- Avoir terminé le **Module 1 : Fondamentaux de SQLite3**
-- SQLite installé et fonctionnel sur votre système
-- Compréhension des concepts de base (tables, lignes, colonnes)
-- Familiarité avec l'interface en ligne de commande SQLite
+- ✅ Module 1 terminé (vous savez ce qu'est SQLite et comment l'ouvrir)
+- ✅ SQLite ≥ 3.38 installé et fonctionnel (`sqlite3 --version`)
+- ✅ Notions de base : table, ligne, colonne (sinon, voir le glossaire du [README du module 1](/01-fondamentaux-sqlite3/README.md))
+- ✅ Un terminal ouvert à côté de la lecture pour exécuter les exemples
 
 ## Plan du module
 
-Ce module vous accompagne dans la découverte progressive du langage SQL adapté à SQLite :
-
-### 2.1 Types de données SQLite (TEXT, INTEGER, REAL, BLOB, NULL)
-Exploration approfondie du système de types unique de SQLite, ses avantages et ses pièges à éviter.
-
-### 2.2 Création et gestion des bases de données
-Maîtrise complète de la création, modification et organisation des bases de données SQLite.
-
-### 2.3 Opérations CRUD : CREATE, READ, UPDATE, DELETE
-Les quatre opérations fondamentales expliquées avec de nombreux exemples pratiques.
-
-### 2.4 Contraintes : PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK
-Garantir l'intégrité et la cohérence de vos données avec les contraintes appropriées.
-
-### 2.5 Requêtes de base : SELECT, WHERE, ORDER BY, GROUP BY, HAVING
-Construction de requêtes efficaces pour extraire exactement les informations dont vous avez besoin.
+| # | Section | Sujet principal | Lien |
+|--:|---------|-----------------|------|
+| 2.1 | **Types de données** | NULL, INTEGER, REAL, TEXT, BLOB ; affinité ; mode STRICT | [→ 2.1](/02-bases-langage-sql-sqlite/01-types-donnees-sqlite-text-integer-real-blob-null.md) |
+| 2.2 | **Création et gestion** | Création d'une base, `PRAGMA`, sauvegardes, `ATTACH` multi-bases | [→ 2.2](/02-bases-langage-sql-sqlite/02-creation-gestion-bases-donnees.md) |
+| 2.3 | **CRUD** | `INSERT` (avec UPSERT), `SELECT`, `UPDATE`, `DELETE` | [→ 2.3](/02-bases-langage-sql-sqlite/03-operations-crud-create-read-update-delete.md) |
+| 2.4 | **Contraintes** | `PRIMARY KEY`, `FOREIGN KEY`, `UNIQUE`, `CHECK` (et triggers) | [→ 2.4](/02-bases-langage-sql-sqlite/04-contraintes-primary-key-foreign-key-unique-check.md) |
+| 2.5 | **Requêtes de base** | `SELECT`, `WHERE`, `ORDER BY`, `GROUP BY`, `HAVING`, agrégations | [→ 2.5](/02-bases-langage-sql-sqlite/05-requetes-base-select-where-order-by-group-by-having.md) |
 
 ## Pourquoi ce module est crucial ?
 
-### 🎯 Fondations solides
+### 🎯 Fondations indispensables
 
-Ce module établit les bases indispensables pour tout travail sérieux avec SQLite. Contrairement à d'autres SGBD, SQLite a ses propres spécificités qu'il faut maîtriser :
+Ce module établit les bases pratiques de tout travail sérieux avec SQLite. **90 % de votre temps avec une base de données** se passera à écrire les requêtes vues ici. Sans ces fondations, les modules suivants (optimisation, programmation avancée, intégrations) seront inaccessibles.
 
-- **Système de types unique** : SQLite gère les types différemment des autres bases de données
-- **Simplicité trompeuse** : Certaines opérations semblent simples mais cachent des subtilités
-- **Optimisations spécifiques** : Les bonnes pratiques SQLite diffèrent parfois des standards SQL
+### 🔧 Spécificités SQLite à connaître absolument
 
-### 🔧 Approche pratique avant tout
+SQLite a son propre style qui diffère parfois subtilement du SQL standard :
 
-Plutôt que d'apprendre la théorie SQL générale, ce module se concentre sur :
+- **Affinité de type** : la valeur porte son type, pas la colonne (« manifest typing »)
+- **`INTEGER PRIMARY KEY`** est un alias du `ROWID` interne — très rapide, et `AUTOINCREMENT` est rarement nécessaire
+- **`PRAGMA foreign_keys = ON`** à activer à **chaque connexion** sinon les FK sont ignorées
+- **Pas de sous-requêtes dans les `CHECK`** — utiliser des triggers à la place
+- **Division `INTEGER / INTEGER = INTEGER`** (troncature, comme en C) — piège fréquent
+- **NULL** se compare avec `IS NULL` / `IS NOT NULL`, jamais avec `= NULL`
 
-- **SQLite en pratique** : Chaque concept est illustré avec des exemples SQLite réels
-- **Erreurs courantes** : Anticipation des pièges fréquents rencontrés par les débutants
-- **Bonnes pratiques** : Dès le départ, développement des bons réflexes
-- **Cas concrets** : Utilisation d'exemples tirés de situations réelles
+Tous ces points sont expliqués en détail dans les sections du module.
 
-### 🚀 Progression pédagogique
+## Carte mentale du module
 
-Le module suit une progression logique et naturelle :
-
-1. **Types de données** → Comprendre comment SQLite stocke l'information
-2. **Bases de données** → Savoir organiser et structurer ses données
-3. **CRUD** → Maîtriser les opérations essentielles du quotidien
-4. **Contraintes** → Garantir la qualité et l'intégrité des données
-5. **Requêtes** → Extraire efficacement l'information recherchée
-
-## Ce qui rend SQLite différent
-
-### 💡 Types dynamiques vs types statiques
-
-**Autres SGBD (MySQL, PostgreSQL) :**
-```sql
--- Types stricts et fixes
-CREATE TABLE users (
-    id INT PRIMARY KEY,           -- Entier obligatoire
-    name VARCHAR(50) NOT NULL,    -- Chaîne de 50 caractères max
-    age TINYINT UNSIGNED         -- Entier 0-255
-);
+```
+                  ┌─────────────────────────────────────┐
+                  │   Module 2 : Bases du langage SQL   │
+                  └─────────────────┬───────────────────┘
+                                    │
+       ┌────────────┬───────────────┼───────────────┬────────────┐
+       ▼            ▼               ▼               ▼            ▼
+   2.1 Quels    2.2 Comment      2.3 Comment    2.4 Comment   2.5 Comment
+   types ?      créer/gérer      ajouter,       garantir      retrouver
+                la base ?        lire, modi-    l'intégrité   les bonnes
+                                 fier, suppr. ? des données ? données ?
 ```
 
-**SQLite :**
-```sql
--- Types flexibles et adaptatifs
-CREATE TABLE users (
-    id INTEGER PRIMARY KEY,       -- Suggère entier, mais flexible
-    name TEXT,                   -- Texte de longueur variable
-    age INTEGER                  -- Entier, mais accepte autre chose
-);
-```
+## Comment lire ce module
 
-### 🔄 Conversion automatique
+- **Manipulez en parallèle** : chaque exemple SQL est conçu pour être exécuté tel quel dans `sqlite3`
+- **Ne sautez pas la section 2.1** : comprendre les types est essentiel pour la suite
+- **Activez WAL et `foreign_keys`** dès le départ pour éviter les surprises :
+  ```sql
+  PRAGMA journal_mode = WAL;
+  PRAGMA foreign_keys = ON;
+  ```
+- **Consultez [/Notes.md](/Notes.md)** pour un récapitulatif condensé après chaque section
 
-SQLite effectue des conversions automatiques intelligentes :
+## Conventions et terminologie
 
-```sql
-INSERT INTO users VALUES (1, 'Alice', '25');     -- '25' devient 25
-INSERT INTO users VALUES ('2', 'Bob', 30);       -- '2' devient 2
-```
+| Sigle | Signification |
+|-------|---------------|
+| **CRUD** | Create, Read, Update, Delete — les 4 opérations sur les données |
+| **PK** | Primary Key (clé primaire) |
+| **FK** | Foreign Key (clé étrangère) |
+| **DDL** | Data Definition Language (`CREATE`, `ALTER`, `DROP`) |
+| **DML** | Data Manipulation Language (`INSERT`, `UPDATE`, `DELETE`, `SELECT`) |
+| **UPSERT** | INSERT … ON CONFLICT … DO UPDATE (mise à jour si conflit) |
+| **CTE** | Common Table Expression (vue temporaire `WITH …`) |
 
-Cette flexibilité est un atout... mais peut aussi créer des surprises !
+## Bonnes pratiques à adopter dès maintenant
 
-### 📁 Simplicité de gestion
-
-Contrairement aux autres SGBD, avec SQLite :
-
-- **Pas d'utilisateurs** à gérer (un fichier = une base)
-- **Pas de permissions** complexes
-- **Pas de configuration** réseau
-- **Modifications directes** possibles sur le fichier
-
-## Méthodologie d'apprentissage
-
-### 🎯 Apprentissage par la pratique
-
-Chaque section suit le même pattern :
-
-1. **Concept théorique** : Explication claire et concise
-2. **Exemples simples** : Démonstrations pas à pas
-3. **Cas pratiques** : Applications concrètes
-4. **Exercices guidés** : Mise en pratique immédiate
-5. **Pièges à éviter** : Erreurs courantes et solutions
-
-### 🔧 Environnement de travail
-
-Pour ce module, vous travaillerez avec :
-
-```bash
-# Structure recommandée
-module2-sql/
-├── exercices/          # Vos exercices pratiques
-├── exemples/           # Bases d'exemple fournies
-└── projets/            # Mini-projets du module
-```
-
-### 📊 Projet fil rouge
-
-Tout au long du module, nous construirons ensemble une **base de données de bibliothèque** qui évoluera avec chaque chapitre :
-
-- **2.1** → Définition des types de données
-- **2.2** → Création de la structure de base
-- **2.3** → Ajout, modification, suppression des données
-- **2.4** → Ajout des contraintes d'intégrité
-- **2.5** → Requêtes d'analyse et de reporting
-
-## Outils et ressources
-
-### 🛠️ Outils recommandés
-
-- **Ligne de commande SQLite** : Pour les manipulations de base
-- **Éditeur de texte** : Pour écrire vos scripts SQL
-- **DB Browser for SQLite** (optionnel) : Pour visualiser vos données
-
-### 📚 Ressources du module
-
-- **Aide-mémoires** : Synthèses des commandes importantes
-- **Scripts d'exemple** : Code réutilisable pour vos projets
-- **Jeux de données** : Données réalistes pour pratiquer
-- **Solutions commentées** : Explications détaillées des exercices
-
-## À quoi vous attendre
-
-### ✅ Ce que vous maîtriserez
-
-À la fin de ce module, vous serez capable de :
-
-- Créer des bases de données SQLite robustes et bien structurées
-- Manipuler efficacement les données avec toutes les opérations CRUD
-- Utiliser les contraintes pour garantir la qualité des données
-- Construire des requêtes SQL précises et performantes
-- Éviter les erreurs courantes spécifiques à SQLite
-- Adopter les bonnes pratiques dès le départ
-
-### 🎯 Niveau de complexité
-
-Ce module reste **accessible aux débutants** tout en étant **complet** :
-
-- **Exemples simples** pour comprendre les concepts
-- **Exercices progressifs** pour monter en compétence
-- **Explications détaillées** des spécificités SQLite
-- **Références** aux standards SQL quand pertinent
-
-## Message d'encouragement
-
-### 🚀 Vous êtes prêt !
-
-Si vous avez terminé le Module 1, vous avez déjà franchi l'étape la plus importante : comprendre la philosophie unique de SQLite. Maintenant, nous allons passer à la pratique !
-
-### 💪 Pas à pas
-
-N'hésitez pas à :
-- **Prendre votre temps** sur chaque section
-- **Expérimenter** au-delà des exemples proposés
-- **Poser des questions** (même à vous-même !)
-- **Revenir en arrière** si nécessaire
-
-### 🎯 Objectif réaliste
-
-À la fin de ce module, vous ne serez pas expert SQL, mais vous aurez des **bases solides** pour :
-- Créer vos propres applications avec SQLite
-- Comprendre et modifier du code SQL existant
-- Progresser vers les modules plus avancés
-- Résoudre la plupart des problèmes quotidiens
+- ✅ **Toujours spécifier les colonnes** dans un `INSERT` : `INSERT INTO t (a, b) VALUES (...)`
+- ✅ **Toujours utiliser `WHERE`** dans un `UPDATE` ou un `DELETE` (sinon catastrophe)
+- ✅ **Préférer `IS NULL` / `IS NOT NULL`** à `= NULL`
+- ✅ **Utiliser des paramètres liés** (`?`) depuis un langage hôte, jamais de concaténation de chaînes
+- ✅ **Activer `PRAGMA foreign_keys = ON`** à chaque connexion
+- ✅ **Stocker l'argent en centimes** (INTEGER) plutôt qu'en REAL (erreurs d'arrondi)
+- ✅ **Stocker les dates** en TEXT ISO-8601 (`'2026-05-26 14:30:00'`) ou en INTEGER (timestamp Unix)
 
 ## Récapitulatif
 
-**Ce module vous donnera :**
-- ✅ Maîtrise des types de données SQLite
-- ✅ Compétences complètes en CRUD
-- ✅ Utilisation appropriée des contraintes
-- ✅ Construction de requêtes efficaces
-- ✅ Bonnes pratiques spécifiques à SQLite
+À la fin de ce module, vous aurez les **briques techniques** pour :
 
-**Avec une approche :**
-- 🎯 Pratique et concrète
-- 📚 Progressive et pédagogique
-- 🔧 Centrée sur SQLite
-- 💡 Riche en exemples réels
+- Concevoir un schéma de base relationnel propre
+- Manipuler les données en toute sécurité (CRUD)
+- Garantir l'intégrité avec les contraintes
+- Extraire l'information avec des requêtes SQL efficaces
+- Éviter les pièges spécifiques à SQLite
+
+Les modules suivants (3 à 9) approfondiront chacun de ces aspects (normalisation, optimisation, programmation, intégrations, sécurité, projets pratiques).
 
 ---
 
-**🎯 Prêt à plonger dans le SQL SQLite ?** Le prochain chapitre explore le système de types unique de SQLite, fondement de tout le reste !
+**Prêt à pratiquer ?** Le premier chapitre explore le système de types unique de SQLite.
 
-**💡 Conseil pour commencer** : Préparez un dossier de travail et ouvrez votre terminal. Nous allons beaucoup pratiquer !
-
-⏭️
+⏭️ [2.1 Types de données SQLite (TEXT, INTEGER, REAL, BLOB, NULL)](/02-bases-langage-sql-sqlite/01-types-donnees-sqlite-text-integer-real-blob-null.md)

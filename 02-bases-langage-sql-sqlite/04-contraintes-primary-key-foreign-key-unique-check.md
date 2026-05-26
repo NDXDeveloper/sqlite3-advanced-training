@@ -58,45 +58,69 @@ CREATE TABLE notes (
 Une **PRIMARY KEY** est un identifiant unique qui permet de distinguer chaque enregistrement dans une table. C'est comme un **numéro de sécurité sociale** : unique et obligatoire.
 
 **Caractéristiques :**
-- ✅ **Unique** : Pas de doublons possibles
-- ✅ **Non NULL** : Toujours obligatoire
-- ✅ **Immutable** : Ne doit pas changer une fois définie
-- ✅ **Une seule par table** : Maximum une clé primaire par table
+- ✅ **Unique** : pas de doublons possibles
+- ✅ **Idéalement non NULL** : voir nuance ci-dessous pour SQLite
+- ✅ **Immutable** : ne devrait pas changer une fois définie
+- ✅ **Une seule par table** : maximum une clé primaire par table
+
+> ⚠️ **Spécificité SQLite — bug historique sur les `NULL`** : par compatibilité avec d'anciennes versions, SQLite **accepte des valeurs `NULL`** dans une colonne `PRIMARY KEY` (sauf `INTEGER PRIMARY KEY` qui est alias du ROWID — toujours non NULL — et les tables `WITHOUT ROWID` qui appliquent correctement la règle SQL). Pour garantir le standard, ajoutez explicitement `NOT NULL` :  
+> ```sql
+> CREATE TABLE matieres (
+>     code TEXT PRIMARY KEY NOT NULL,   -- ajout explicite pour suivre SQL standard
+>     nom  TEXT NOT NULL
+> );
+> ```
 
 ### 📝 Syntaxes de PRIMARY KEY
 
 ```sql
--- Méthode 1 : Colonne auto-incrémentée (recommandée)
-CREATE TABLE eleves_v2 (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+-- Méthode 1a : INTEGER PRIMARY KEY (recommandé, simple et rapide)
+-- C'est un ALIAS du ROWID interne — aucune colonne supplémentaire
+CREATE TABLE eleves_v1 (
+    id INTEGER PRIMARY KEY,        -- réutilise les IDs des lignes supprimées
     nom TEXT NOT NULL,
     prenom TEXT NOT NULL,
     email TEXT
 );
 
--- Méthode 2 : PRIMARY KEY simple
+-- Méthode 1b : ... AUTOINCREMENT — UNIQUEMENT si vous avez besoin
+-- de garantir que les IDs ne sont JAMAIS réutilisés (rare en pratique)
+CREATE TABLE eleves_v2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,  -- ⚠️ ralentit légèrement les INSERTs
+    nom TEXT NOT NULL,
+    prenom TEXT NOT NULL,
+    email TEXT
+);
+
+-- Méthode 2 : Clé naturelle TEXT (avec NOT NULL pour la rigueur)
 CREATE TABLE matieres (
-    code TEXT PRIMARY KEY,  -- Ex: 'MATH', 'HIST', 'ANGL'
+    code TEXT PRIMARY KEY NOT NULL,  -- Ex: 'MATH', 'HIST', 'ANGL'
     nom TEXT NOT NULL,
     coefficient INTEGER DEFAULT 1
 );
 
 -- Méthode 3 : PRIMARY KEY composite (plusieurs colonnes)
 CREATE TABLE planning (
-    classe_id INTEGER,
-    jour TEXT,
-    heure TEXT,
-    matiere TEXT,
+    classe_id INTEGER NOT NULL,
+    jour      TEXT NOT NULL,
+    heure     TEXT NOT NULL,
+    matiere   TEXT,
     PRIMARY KEY (classe_id, jour, heure)
 );
 ```
+
+> 💡 **`AUTOINCREMENT` vs simple `INTEGER PRIMARY KEY`** :  
+> - `INTEGER PRIMARY KEY` (sans `AUTOINCREMENT`) : SQLite attribue un nouvel ID = `MAX(id) + 1` ; **les IDs des lignes supprimées peuvent être réutilisés**. Très rapide.  
+> - `INTEGER PRIMARY KEY AUTOINCREMENT` : SQLite garantit que **chaque nouvel ID est strictement supérieur** à tous les précédents, jamais réutilisé. Coûte un peu plus (table `sqlite_sequence` consultée à chaque insert).  
+>  
+> **En pratique, n'utilisez `AUTOINCREMENT` que si votre métier l'exige** (audit légal, références externes à long terme, etc.). Sinon, `INTEGER PRIMARY KEY` suffit.
 
 ### 🔍 Démonstration pratique
 
 ```sql
 -- Recréer la table classes avec PRIMARY KEY
-DROP TABLE classes;
-CREATE TABLE classes (
+DROP TABLE classes;  
+CREATE TABLE classes (  
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     nom TEXT NOT NULL UNIQUE,
     niveau TEXT NOT NULL,
@@ -113,13 +137,13 @@ INSERT INTO classes (nom, niveau, nombre_max_eleves) VALUES
 SELECT * FROM classes;
 
 -- ❌ Tentative d'insertion avec ID en conflit
-INSERT INTO classes (id, nom, niveau, nombre_max_eleves)
-VALUES (1, '6ème C', 'Collège', 26);
+INSERT INTO classes (id, nom, niveau, nombre_max_eleves)  
+VALUES (1, '6ème C', 'Collège', 26);  
 -- Error: UNIQUE constraint failed: classes.id
 
 -- ✅ Insertion sans spécifier l'ID (auto-incrémenté)
-INSERT INTO classes (nom, niveau, nombre_max_eleves)
-VALUES ('3ème A', 'Collège', 24);
+INSERT INTO classes (nom, niveau, nombre_max_eleves)  
+VALUES ('3ème A', 'Collège', 24);  
 
 SELECT * FROM classes ORDER BY id;
 ```
@@ -127,29 +151,29 @@ SELECT * FROM classes ORDER BY id;
 ### 🎯 Bonnes pratiques PRIMARY KEY
 
 ```sql
--- ✅ RECOMMANDÉ : INTEGER AUTOINCREMENT
+-- ✅ RECOMMANDÉ : INTEGER PRIMARY KEY (alias du ROWID, rapide)
 CREATE TABLE produits (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY,    -- AUTOINCREMENT seulement si vraiment nécessaire
     nom TEXT NOT NULL,
     prix REAL
 );
 
 -- ✅ ACCEPTABLE : Clé naturelle courte et stable
 CREATE TABLE pays (
-    code_iso TEXT PRIMARY KEY,  -- 'FR', 'DE', 'US'
+    code_iso TEXT PRIMARY KEY NOT NULL,  -- 'FR', 'DE', 'US'
     nom TEXT NOT NULL
 );
 
--- ❌ À ÉVITER : Clé trop longue ou variable
+-- ❌ À ÉVITER : Clé qui peut changer
 CREATE TABLE utilisateurs_mauvais (
-    email TEXT PRIMARY KEY,  -- L'email peut changer !
+    email TEXT PRIMARY KEY,  -- L'email peut changer ! Et les FK pointant dessus aussi…
     nom TEXT,
     prenom TEXT
 );
 
--- ✅ MIEUX : ID auto + contrainte UNIQUE sur email
+-- ✅ MIEUX : ID interne stable + contrainte UNIQUE sur email
 CREATE TABLE utilisateurs_bon (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
     nom TEXT,
     prenom TEXT
@@ -181,8 +205,8 @@ PRAGMA foreign_keys;
 
 ```sql
 -- Recréer la table eleves avec clé étrangère
-DROP TABLE eleves;
-CREATE TABLE eleves (
+DROP TABLE eleves;  
+CREATE TABLE eleves (  
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     nom TEXT NOT NULL,
     prenom TEXT NOT NULL,
@@ -212,13 +236,13 @@ INSERT INTO eleves (nom, prenom, email, age, classe_id) VALUES
     ('Durand', 'Sophie', 'sophie.durand@email.com', 11, 2);
 
 -- Vérifier les insertions
-SELECT e.nom, e.prenom, c.nom as classe
-FROM eleves e
-JOIN classes c ON e.classe_id = c.id;
+SELECT e.nom, e.prenom, c.nom as classe  
+FROM eleves e  
+JOIN classes c ON e.classe_id = c.id;  
 
 -- ❌ Tentative d'insertion avec classe inexistante
-INSERT INTO eleves (nom, prenom, age, classe_id)
-VALUES ('Erreur', 'Test', 12, 999);
+INSERT INTO eleves (nom, prenom, age, classe_id)  
+VALUES ('Erreur', 'Test', 12, 999);  
 -- Error: FOREIGN KEY constraint failed
 
 -- ❌ Tentative de suppression d'une classe avec élèves
@@ -228,27 +252,42 @@ DELETE FROM classes WHERE id = 1;
 
 ### 🔧 Actions sur les clés étrangères
 
+Les **5 actions possibles** pour `ON DELETE` et `ON UPDATE` :
+
+| Action | Comportement |
+|--------|--------------|
+| `NO ACTION` (défaut) | Vérifie en fin de transaction et lève une erreur si conflit |
+| `RESTRICT` | Vérifie immédiatement et lève une erreur si conflit |
+| `SET NULL` | Met les colonnes enfant à `NULL` |
+| `SET DEFAULT` | Restaure la valeur `DEFAULT` de la colonne enfant |
+| `CASCADE` | Propage la suppression/modification aux enfants |
+
 ```sql
 -- Définir des actions automatiques
 CREATE TABLE commandes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id        INTEGER PRIMARY KEY,
     client_id INTEGER,
-    total REAL,
+    total     REAL,
     FOREIGN KEY (client_id) REFERENCES clients(id)
         ON DELETE CASCADE     -- Supprime les commandes si client supprimé
-        ON UPDATE CASCADE     -- Met à jour les commandes si ID client change
+        ON UPDATE CASCADE     -- Met à jour si l'ID client change (rare en pratique)
 );
 
 -- Autres actions possibles
 CREATE TABLE historique (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    eleve_id INTEGER,
-    action TEXT,
+    id        INTEGER PRIMARY KEY,
+    eleve_id  INTEGER,
+    action    TEXT,
     FOREIGN KEY (eleve_id) REFERENCES eleves(id)
-        ON DELETE SET NULL    -- Met NULL si élève supprimé
+        ON DELETE SET NULL    -- Met NULL si élève supprimé (conserve l'historique)
         ON UPDATE RESTRICT    -- Interdit la modification de l'ID élève
 );
 ```
+
+> 💡 **Choisir la bonne action** :  
+> - `CASCADE` : pour les données vraiment « possédées » par le parent (lignes d'une commande ↔ commande)  
+> - `SET NULL` : pour préserver l'historique tout en cassant la référence (commentaires ↔ utilisateur supprimé)  
+> - `RESTRICT` / `NO ACTION` : pour forcer un nettoyage manuel explicite (factures ↔ entreprise)
 
 ### 🔍 Diagnostic des contraintes FK
 
@@ -310,20 +349,20 @@ INSERT INTO utilisateurs (email, nom_utilisateur, mot_de_passe) VALUES
     ('prof@ecole.fr', 'professeur1', 'autremotdepasse');
 
 -- ❌ Tentative de doublon sur email
-INSERT INTO utilisateurs (email, nom_utilisateur, mot_de_passe)
-VALUES ('admin@ecole.fr', 'admin2', 'nouveaumotdepasse');
+INSERT INTO utilisateurs (email, nom_utilisateur, mot_de_passe)  
+VALUES ('admin@ecole.fr', 'admin2', 'nouveaumotdepasse');  
 -- Error: UNIQUE constraint failed: utilisateurs.email
 
 -- ❌ Tentative de doublon sur nom_utilisateur
-INSERT INTO utilisateurs (email, nom_utilisateur, mot_de_passe)
-VALUES ('autre@ecole.fr', 'admin', 'motdepasse');
+INSERT INTO utilisateurs (email, nom_utilisateur, mot_de_passe)  
+VALUES ('autre@ecole.fr', 'admin', 'motdepasse');  
 -- Error: UNIQUE constraint failed: utilisateurs.nom_utilisateur
 
 -- ✅ Mais les valeurs NULL sont autorisées (et multiples)
-INSERT INTO utilisateurs (email, mot_de_passe)
-VALUES ('sans_pseudo@ecole.fr', 'motdepasse');
-INSERT INTO utilisateurs (email, mot_de_passe)
-VALUES ('autre_sans_pseudo@ecole.fr', 'motdepasse');
+INSERT INTO utilisateurs (email, mot_de_passe)  
+VALUES ('sans_pseudo@ecole.fr', 'motdepasse');  
+INSERT INTO utilisateurs (email, mot_de_passe)  
+VALUES ('autre_sans_pseudo@ecole.fr', 'motdepasse');  
 
 SELECT * FROM utilisateurs;
 ```
@@ -332,12 +371,12 @@ SELECT * FROM utilisateurs;
 
 ```sql
 -- Ignorer les doublons
-INSERT OR IGNORE INTO utilisateurs (email, nom_utilisateur, mot_de_passe)
-VALUES ('admin@ecole.fr', 'nouveau_admin', 'motdepasse');
+INSERT OR IGNORE INTO utilisateurs (email, nom_utilisateur, mot_de_passe)  
+VALUES ('admin@ecole.fr', 'nouveau_admin', 'motdepasse');  
 
 -- Remplacer en cas de doublon
-INSERT OR REPLACE INTO utilisateurs (email, nom_utilisateur, mot_de_passe)
-VALUES ('admin@ecole.fr', 'admin_mis_a_jour', 'nouveau_motdepasse');
+INSERT OR REPLACE INTO utilisateurs (email, nom_utilisateur, mot_de_passe)  
+VALUES ('admin@ecole.fr', 'admin_mis_a_jour', 'nouveau_motdepasse');  
 
 -- Vérifier le résultat
 SELECT * FROM utilisateurs WHERE email = 'admin@ecole.fr';
@@ -392,27 +431,27 @@ INSERT INTO eleves_complet (nom, prenom, age, email, niveau) VALUES
     ('Martin', 'Bob', 14, 'bob.martin@email.com', '4ème');
 
 -- ❌ Âge invalide
-INSERT INTO eleves_complet (nom, prenom, age, email, niveau)
-VALUES ('Trop', 'Jeune', 5, 'jeune@email.com', 'CP');
+INSERT INTO eleves_complet (nom, prenom, age, email, niveau)  
+VALUES ('Trop', 'Jeune', 5, 'jeune@email.com', 'CP');  
 -- Error: CHECK constraint failed: age
 
 -- ❌ Email invalide
-INSERT INTO eleves_complet (nom, prenom, age, email, niveau)
-VALUES ('Email', 'Invalide', 12, 'email_sans_arobase', '6ème');
+INSERT INTO eleves_complet (nom, prenom, age, email, niveau)  
+VALUES ('Email', 'Invalide', 12, 'email_sans_arobase', '6ème');  
 -- Error: CHECK constraint failed: email
 
 -- ❌ Niveau invalide
-INSERT INTO eleves_complet (nom, prenom, age, email, niveau)
-VALUES ('Niveau', 'Invalide', 12, 'niveau@email.com', 'Terminale');
+INSERT INTO eleves_complet (nom, prenom, age, email, niveau)  
+VALUES ('Niveau', 'Invalide', 12, 'niveau@email.com', 'Terminale');  
 -- Error: CHECK constraint failed: niveau
 
 -- ✅ Moyenne NULL autorisée
-INSERT INTO eleves_complet (nom, prenom, age, email, niveau, moyenne)
-VALUES ('Moyenne', 'Nulle', 13, 'moyenne@email.com', '5ème', NULL);
+INSERT INTO eleves_complet (nom, prenom, age, email, niveau, moyenne)  
+VALUES ('Moyenne', 'Nulle', 13, 'moyenne@email.com', '5ème', NULL);  
 
 -- ❌ Moyenne hors limites
-INSERT INTO eleves_complet (nom, prenom, age, email, niveau, moyenne)
-VALUES ('Moyenne', 'Trop_haute', 13, 'haute@email.com', '5ème', 25);
+INSERT INTO eleves_complet (nom, prenom, age, email, niveau, moyenne)  
+VALUES ('Moyenne', 'Trop_haute', 13, 'haute@email.com', '5ème', 25);  
 -- Error: CHECK constraint failed: moyenne
 ```
 
@@ -431,21 +470,50 @@ CREATE TABLE evenements (
 );
 
 -- Test des contraintes avancées
-INSERT INTO evenements (nom, date_debut, date_fin, duree_jours)
-VALUES ('Vacances été', '2024-07-01', '2024-08-31', 62);
+INSERT INTO evenements (nom, date_debut, date_fin, duree_jours)  
+VALUES ('Vacances été', '2024-07-01', '2024-08-31', 62);  
 
 -- ❌ Dates incohérentes
-INSERT INTO evenements (nom, date_debut, date_fin, duree_jours)
-VALUES ('Erreur', '2024-08-01', '2024-07-01', 1);
+INSERT INTO evenements (nom, date_debut, date_fin, duree_jours)  
+VALUES ('Erreur', '2024-08-01', '2024-07-01', 1);  
 -- Error: CHECK constraint failed
 ```
+
+### ⚠️ Limitations importantes des CHECK
+
+SQLite impose deux règles strictes pour les contraintes `CHECK` :
+
+**1. Pas de sous-requêtes (SELECT)** — règle absolue :
+```sql
+-- ❌ INTERDIT : SQLite rejette à la création de la table
+CREATE TABLE reservations (
+    chambre_id INTEGER,
+    nb_personnes INTEGER,
+    CHECK (nb_personnes <= (SELECT capacite FROM chambres WHERE id = chambre_id))
+);
+-- Error: subqueries prohibited in CHECK constraints
+```
+
+**Solution** : utiliser un **trigger** `BEFORE INSERT` / `BEFORE UPDATE` qui appelle `RAISE(ABORT, '…')`.
+
+**2. Fonctions non-déterministes déconseillées** : `date('now')`, `random()`, etc. fonctionnent syntaxiquement mais produisent des résultats **différents à chaque évaluation**, ce qui peut piéger :
+```sql
+-- ⚠️ Fonctionne mais piège : la contrainte est ré-évaluée à chaque UPDATE
+-- avec une nouvelle valeur de 'now'. Une ligne valide aujourd'hui peut
+-- devenir invalide demain lors d'un simple UPDATE d'une autre colonne.
+CREATE TABLE adherents (
+    date_naissance TEXT,
+    CHECK (date('now') >= date(date_naissance, '+18 years'))
+);
+```
+**Solution recommandée** : vérifier l'âge **à l'insertion** dans l'application, ou via un trigger explicite.
 
 ## Combinaison de toutes les contraintes
 
 ### 🏗️ Exemple complet : Système de notes
 
 ```sql
--- Table complète avec toutes les contraintes
+-- Table complète avec toutes les contraintes (déterministes uniquement)
 CREATE TABLE evaluations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
@@ -458,7 +526,7 @@ CREATE TABLE evaluations (
     note REAL CHECK (note BETWEEN 0 AND 20),
     coefficient INTEGER DEFAULT 1 CHECK (coefficient > 0),
     date_evaluation TEXT NOT NULL CHECK (date(date_evaluation) = date_evaluation),
-    type_evaluation TEXT CHECK (type_evaluation IN ('controle', 'devoir', 'examen', 'oral')),
+    type_evaluation TEXT CHECK (type_evaluation IN ('controle', 'devoir', 'examen', 'oral', 'absent')),
 
     -- Contraintes uniques
     UNIQUE (eleve_id, matiere_code, date_evaluation, type_evaluation),
@@ -468,10 +536,18 @@ CREATE TABLE evaluations (
     FOREIGN KEY (matiere_code) REFERENCES matieres(code) ON UPDATE CASCADE,
     FOREIGN KEY (professeur_id) REFERENCES professeurs(id) ON DELETE SET NULL,
 
-    -- Contraintes métier complexes
-    CHECK (date_evaluation <= date('now')),  -- Pas de notes dans le futur
+    -- Contrainte déterministe (sur colonnes de la ligne)
     CHECK (note IS NOT NULL OR type_evaluation = 'absent')  -- Note obligatoire sauf absence
 );
+
+-- 💡 Pour la règle "pas de notes dans le futur", on n'utilise PAS un CHECK
+-- (qui serait non-déterministe avec date('now')), mais un trigger BEFORE INSERT :
+CREATE TRIGGER no_future_evaluation  
+BEFORE INSERT ON evaluations  
+WHEN NEW.date_evaluation > date('now')  
+BEGIN  
+    SELECT RAISE(ABORT, 'Impossible de saisir une évaluation dans le futur');
+END;
 ```
 
 ### 🔍 Tests du système complet
@@ -484,22 +560,22 @@ INSERT INTO matieres (code, nom, coefficient) VALUES
     ('HIST', 'Histoire', 2);
 
 -- ✅ Insertion valide
-INSERT INTO evaluations (eleve_id, matiere_code, note, date_evaluation, type_evaluation)
-VALUES (1, 'MATH', 15.5, '2024-01-15', 'controle');
+INSERT INTO evaluations (eleve_id, matiere_code, note, date_evaluation, type_evaluation)  
+VALUES (1, 'MATH', 15.5, '2024-01-15', 'controle');  
 
 -- ❌ Note hors limites
-INSERT INTO evaluations (eleve_id, matiere_code, note, date_evaluation, type_evaluation)
-VALUES (1, 'FR', 25, '2024-01-16', 'devoir');
+INSERT INTO evaluations (eleve_id, matiere_code, note, date_evaluation, type_evaluation)  
+VALUES (1, 'FR', 25, '2024-01-16', 'devoir');  
 -- Error: CHECK constraint failed: note
 
 -- ❌ Doublon sur contrainte unique
-INSERT INTO evaluations (eleve_id, matiere_code, note, date_evaluation, type_evaluation)
-VALUES (1, 'MATH', 12, '2024-01-15', 'controle');
+INSERT INTO evaluations (eleve_id, matiere_code, note, date_evaluation, type_evaluation)  
+VALUES (1, 'MATH', 12, '2024-01-15', 'controle');  
 -- Error: UNIQUE constraint failed
 
 -- ✅ Même élève, même matière, même date, mais type différent
-INSERT INTO evaluations (eleve_id, matiere_code, note, date_evaluation, type_evaluation)
-VALUES (1, 'MATH', 16, '2024-01-15', 'oral');
+INSERT INTO evaluations (eleve_id, matiere_code, note, date_evaluation, type_evaluation)  
+VALUES (1, 'MATH', 16, '2024-01-15', 'oral');  
 ```
 
 ## 🎯 Exercice pratique - Système de bibliothèque avec contraintes
@@ -539,7 +615,7 @@ CREATE TABLE categories (
     description TEXT
 );
 
--- Table des livres avec toutes les contraintes
+-- Table des livres avec toutes les contraintes (déterministes)
 CREATE TABLE livres (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     titre TEXT NOT NULL,
@@ -547,7 +623,7 @@ CREATE TABLE livres (
     auteur_id INTEGER NOT NULL,
     editeur_id INTEGER,
     categorie_code TEXT NOT NULL,
-    annee_publication INTEGER CHECK (annee_publication BETWEEN 1000 AND strftime('%Y', 'now')),
+    annee_publication INTEGER CHECK (annee_publication BETWEEN 1000 AND 9999),  -- Plage statique, déterministe
     pages INTEGER CHECK (pages > 0),
     prix REAL CHECK (prix > 0),
     stock INTEGER DEFAULT 0 CHECK (stock >= 0),
@@ -558,9 +634,18 @@ CREATE TABLE livres (
     FOREIGN KEY (editeur_id) REFERENCES editeurs(id) ON DELETE SET NULL,
     FOREIGN KEY (categorie_code) REFERENCES categories(code) ON UPDATE CASCADE,
 
-    -- Contraintes métier
-    CHECK (date_acquisition >= date(strftime('%Y', annee_publication) || '-01-01'))  -- Acquisition après publication
+    -- Contrainte métier déterministe (utilise uniquement les colonnes de la ligne)
+    CHECK (date_acquisition >= printf('%04d-01-01', annee_publication))  -- Acquisition après publication
 );
+
+-- 💡 Pour la règle "année de publication ≤ année courante", utilisez un trigger
+-- (ou validez côté application) car date('now') / strftime('now') sont non-déterministes :
+CREATE TRIGGER no_future_publication  
+BEFORE INSERT ON livres  
+WHEN NEW.annee_publication > CAST(strftime('%Y', 'now') AS INTEGER)  
+BEGIN  
+    SELECT RAISE(ABORT, 'Année de publication dans le futur');
+END;
 
 -- Table des adhérents
 CREATE TABLE adherents (
@@ -575,9 +660,10 @@ CREATE TABLE adherents (
     type_adherent TEXT DEFAULT 'standard' CHECK (type_adherent IN ('standard', 'etudiant', 'senior', 'premium')),
     actif INTEGER DEFAULT 1 CHECK (actif IN (0, 1)),
 
-    -- Contraintes métier
-    CHECK (date_adhesion >= date_naissance),  -- Adhésion après naissance
-    CHECK (date('now') >= date(date_naissance, '+16 years') OR type_adherent = 'etudiant')  -- Majeur sauf étudiant
+    -- Contraintes métier déterministes (utilisent uniquement les colonnes de la ligne)
+    CHECK (date_adhesion >= date_naissance),                              -- Adhésion après naissance
+    CHECK (date_adhesion >= date(date_naissance, '+16 years')
+           OR type_adherent = 'etudiant')                                 -- 16 ans à l'adhésion (sauf étudiant)
 );
 
 -- Table des emprunts avec contraintes complexes
@@ -648,44 +734,45 @@ SELECT
     a.nom || ' ' || a.prenom as auteur,
     c.nom as categorie,
     e.nom as editeur
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id
-JOIN categories c ON l.categorie_code = c.code
-LEFT JOIN editeurs e ON l.editeur_id = e.id;
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  
+JOIN categories c ON l.categorie_code = c.code  
+LEFT JOIN editeurs e ON l.editeur_id = e.id;  
 
 -- ❌ Tests d'erreurs de contraintes
 
 -- ISBN invalide
-INSERT INTO livres (titre, isbn, auteur_id, categorie_code, annee_publication, pages, prix)
-VALUES ('Test', '123', 1, 'ROM', 2020, 100, 10);
+INSERT INTO livres (titre, isbn, auteur_id, categorie_code, annee_publication, pages, prix)  
+VALUES ('Test', '123', 1, 'ROM', 2020, 100, 10);  
 -- Error: CHECK constraint failed: isbn
 
 -- Catégorie inexistante
-INSERT INTO livres (titre, isbn, auteur_id, categorie_code, annee_publication, pages, prix)
-VALUES ('Test', '1234567890', 1, 'XXX', 2020, 100, 10);
+INSERT INTO livres (titre, isbn, auteur_id, categorie_code, annee_publication, pages, prix)  
+VALUES ('Test', '1234567890', 1, 'XXX', 2020, 100, 10);  
 -- Error: FOREIGN KEY constraint failed
 
--- Adhérent mineur sans type étudiant
-INSERT INTO adherents (numero_carte, nom, prenom, date_naissance, type_adherent)
-VALUES ('00000099', 'Trop', 'Jeune', '2010-01-01', 'standard');
+-- Adhérent de moins de 16 ans sans type étudiant
+-- ⚠️ La date de naissance est volontairement choisie pour donner < 16 ans à l'adhésion 2026
+INSERT INTO adherents (numero_carte, nom, prenom, date_naissance, type_adherent)  
+VALUES ('00000099', 'Trop', 'Jeune', '2015-01-01', 'standard');  
 -- Error: CHECK constraint failed
 
 -- Double emprunt du même livre
-INSERT INTO emprunts (adherent_id, livre_id, date_retour_prevue)
-VALUES (2, 1, datetime('now', '+7 days'));
+INSERT INTO emprunts (adherent_id, livre_id, date_retour_prevue)  
+VALUES (2, 1, datetime('now', '+7 days'));  
 -- Error: UNIQUE constraint failed
 
 -- === VÉRIFICATIONS FINALES ===
 
 -- Statistiques générales
-SELECT 'Tables' as type, 'Auteurs' as nom, COUNT(*) as nombre FROM auteurs
-UNION ALL SELECT 'Tables', 'Livres', COUNT(*) FROM livres
-UNION ALL SELECT 'Tables', 'Adhérents', COUNT(*) FROM adherents
-UNION ALL SELECT 'Tables', 'Emprunts actifs', COUNT(*) FROM emprunts WHERE date_retour_reel IS NULL;
+SELECT 'Tables' as type, 'Auteurs' as nom, COUNT(*) as nombre FROM auteurs  
+UNION ALL SELECT 'Tables', 'Livres', COUNT(*) FROM livres  
+UNION ALL SELECT 'Tables', 'Adhérents', COUNT(*) FROM adherents  
+UNION ALL SELECT 'Tables', 'Emprunts actifs', COUNT(*) FROM emprunts WHERE date_retour_reel IS NULL;  
 
 -- Vérifier l'intégrité
-PRAGMA integrity_check;
-PRAGMA foreign_key_check;
+PRAGMA integrity_check;  
+PRAGMA foreign_key_check;  
 
 -- Vue des emprunts en cours
 SELECT
@@ -697,11 +784,11 @@ SELECT
         WHEN date('now') > date(e.date_retour_prevue) THEN '⚠️ En retard'
         ELSE '✅ Dans les temps'
     END as statut
-FROM emprunts e
-JOIN adherents ad ON e.adherent_id = ad.id
-JOIN livres l ON e.livre_id = l.id
-WHERE e.date_retour_reel IS NULL
-ORDER BY e.date_retour_prevue;
+FROM emprunts e  
+JOIN adherents ad ON e.adherent_id = ad.id  
+JOIN livres l ON e.livre_id = l.id  
+WHERE e.date_retour_reel IS NULL  
+ORDER BY e.date_retour_prevue;  
 ```
 
 ## Récapitulatif des bonnes pratiques
@@ -709,9 +796,10 @@ ORDER BY e.date_retour_prevue;
 ### ✅ PRIMARY KEY
 
 - **Toujours une PK** par table
-- **INTEGER AUTOINCREMENT** pour la simplicité
-- **Clés naturelles** seulement si stables et courtes
-- **Jamais de données métier** dans la PK
+- **`INTEGER PRIMARY KEY`** (sans `AUTOINCREMENT`) par défaut — c'est un alias rapide du `ROWID`
+- **`AUTOINCREMENT`** uniquement si vous devez garantir que les IDs ne sont **jamais réutilisés**
+- **Clés naturelles** acceptables si **stables, courtes et NOT NULL** (ex: code ISO pays)
+- **Éviter** les colonnes métier modifiables comme PK (email, nom…) — préférer un ID interne + `UNIQUE` sur la colonne métier
 
 ### ✅ FOREIGN KEY
 
@@ -749,8 +837,8 @@ PRAGMA foreign_key_list(ma_table);
 PRAGMA integrity_check;
 
 -- Vérifier les clés étrangères
-PRAGMA foreign_key_check;
-PRAGMA foreign_key_check(ma_table);
+PRAGMA foreign_key_check;  
+PRAGMA foreign_key_check(ma_table);  
 
 -- Voir le schéma complet
 .schema ma_table
@@ -768,8 +856,8 @@ PRAGMA foreign_key_check(ma_table);
 SELECT id FROM clients WHERE id = 999;
 
 -- Solution 2 : Insérer d'abord la référence
-INSERT INTO clients (nom) VALUES ('Nouveau Client');
-INSERT INTO commandes (client_id) VALUES (last_insert_rowid());
+INSERT INTO clients (nom) VALUES ('Nouveau Client');  
+INSERT INTO commandes (client_id) VALUES (last_insert_rowid());  
 
 -- Solution 3 : Utiliser une clé existante
 SELECT id FROM clients LIMIT 1;  -- Prendre un ID existant
@@ -784,12 +872,13 @@ SELECT id FROM clients LIMIT 1;  -- Prendre un ID existant
 -- Solution 1 : Ignorer le doublon
 INSERT OR IGNORE INTO users (email) VALUES ('existing@email.com');
 
--- Solution 2 : Mettre à jour en cas de conflit
+-- Solution 2 (legacy) : Remplacer la ligne complète en cas de conflit
 INSERT OR REPLACE INTO users (email, nom) VALUES ('existing@email.com', 'Nouveau Nom');
+-- ⚠️ Attention : OR REPLACE SUPPRIME puis recrée la ligne (triggers DELETE, autres colonnes perdues)
 
--- Solution 3 : Vérifier avant insertion
-SELECT COUNT(*) FROM users WHERE email = 'existing@email.com';
--- Si 0, alors insérer
+-- Solution 3 (recommandée, SQLite ≥ 3.24) : UPSERT ciblé
+INSERT INTO users (email, nom) VALUES ('existing@email.com', 'Nouveau Nom')  
+ON CONFLICT(email) DO UPDATE SET nom = excluded.nom;  
 ```
 
 **Erreur : CHECK constraint failed**
@@ -824,16 +913,16 @@ CREATE TABLE produits_new (
 );
 
 -- 2. Copier les données valides (filtrer les invalides)
-INSERT INTO produits_new (id, nom, prix, stock, categorie)
-SELECT id, nom, prix, stock, COALESCE(categorie, 'Non défini')
-FROM produits
-WHERE prix > 0 AND stock >= 0;         -- Filtrer les données invalides
+INSERT INTO produits_new (id, nom, prix, stock, categorie)  
+SELECT id, nom, prix, stock, COALESCE(categorie, 'Non défini')  
+FROM produits  
+WHERE prix > 0 AND stock >= 0;         -- Filtrer les données invalides  
 
 -- 3. Sauvegarder les données non conformes si nécessaire
-CREATE TABLE produits_invalides AS
-SELECT *, 'prix négatif ou stock négatif' as raison
-FROM produits
-WHERE prix <= 0 OR stock < 0;
+CREATE TABLE produits_invalides AS  
+SELECT *, 'prix négatif ou stock négatif' as raison  
+FROM produits  
+WHERE prix <= 0 OR stock < 0;  
 
 -- 4. Supprimer l'ancienne table
 DROP TABLE produits;
@@ -847,8 +936,8 @@ CREATE INDEX idx_produits_nom ON produits(nom);
 COMMIT;
 
 -- Vérifier le résultat
-SELECT COUNT(*) FROM produits;
-SELECT COUNT(*) FROM produits_invalides;
+SELECT COUNT(*) FROM produits;  
+SELECT COUNT(*) FROM produits_invalides;  
 ```
 
 ## Contraintes avancées et cas d'usage spéciaux
@@ -857,20 +946,23 @@ SELECT COUNT(*) FROM produits_invalides;
 
 ```sql
 -- CHECK conditionnel selon une autre colonne
+-- ⚠️ SQL standard (et SQLite) : toutes les colonnes doivent être déclarées AVANT
+--    les contraintes table-level. On ne peut PAS intercaler une CHECK table-level
+--    entre deux définitions de colonne — la grammaire CREATE TABLE ne le permet pas.
 CREATE TABLE commandes_avancees (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     type_commande TEXT CHECK (type_commande IN ('standard', 'express', 'premium')),
     prix_base REAL CHECK (prix_base > 0),
     frais_express REAL DEFAULT 0,
+    prix_total REAL,
 
+    -- Contraintes table-level — placées APRÈS toutes les colonnes
     -- Contrainte conditionnelle : frais express obligatoires si type express
     CHECK (
         (type_commande = 'express' AND frais_express > 0) OR
         (type_commande != 'express' AND frais_express = 0)
     ),
-
     -- Prix total cohérent
-    prix_total REAL,
     CHECK (prix_total = prix_base + frais_express)
 );
 
@@ -887,9 +979,9 @@ Parfois, les contraintes simples ne suffisent pas. On peut utiliser des triggers
 
 ```sql
 -- Contrainte : Un élève ne peut avoir plus de 3 emprunts simultanés
-CREATE TRIGGER limite_emprunts_eleve
-BEFORE INSERT ON emprunts
-WHEN (
+CREATE TRIGGER limite_emprunts_eleve  
+BEFORE INSERT ON emprunts  
+WHEN (  
     SELECT COUNT(*)
     FROM emprunts
     WHERE adherent_id = NEW.adherent_id
@@ -902,19 +994,29 @@ END;
 -- Test du trigger
 -- Si un adhérent a déjà 3 emprunts, le 4ème sera rejeté
 
--- Contrainte : Stock automatique lors des emprunts
-CREATE TRIGGER update_stock_emprunt
-AFTER INSERT ON emprunts
-BEGIN
+-- Contrainte : Décrémenter le stock SI possible, sinon refuser l'emprunt
+-- ⚠️ La vérification doit être BEFORE INSERT (sinon l'INSERT passe et l'UPDATE est silencieusement ignoré)
+CREATE TRIGGER check_stock_emprunt  
+BEFORE INSERT ON emprunts  
+WHEN (SELECT stock FROM livres WHERE id = NEW.livre_id) <= 0  
+BEGIN  
+    SELECT RAISE(ABORT, 'Stock insuffisant pour cet emprunt');
+END;
+
+CREATE TRIGGER update_stock_emprunt  
+AFTER INSERT ON emprunts  
+BEGIN  
     UPDATE livres
     SET stock = stock - 1
-    WHERE id = NEW.livre_id AND stock > 0;
+    WHERE id = NEW.livre_id;
+END;
 
-    -- Vérifier que le stock n'est pas négatif
-    SELECT CASE
-        WHEN (SELECT stock FROM livres WHERE id = NEW.livre_id) < 0
-        THEN RAISE(ABORT, 'Stock insuffisant pour cet emprunt')
-    END;
+-- Et symétriquement, recréditer le stock au retour :
+CREATE TRIGGER update_stock_retour  
+AFTER UPDATE OF date_retour_reel ON emprunts  
+WHEN NEW.date_retour_reel IS NOT NULL AND OLD.date_retour_reel IS NULL  
+BEGIN  
+    UPDATE livres SET stock = stock + 1 WHERE id = NEW.livre_id;
 END;
 ```
 
@@ -982,13 +1084,19 @@ CREATE TABLE test_sans_contraintes (
     age INTEGER
 );
 
--- Insérer 10000 enregistrements
-INSERT INTO test_sans_contraintes
-SELECT
-    value as id,
-    'user' || value || '@test.com' as email,
-    (value % 80) + 18 as age
-FROM generate_series(1, 10000);
+-- Insérer 10000 enregistrements via une CTE récursive
+-- (alternative portable à generate_series, qui n'est pas activé par défaut sur tous les builds SQLite)
+WITH RECURSIVE serie(n) AS (
+    SELECT 1
+    UNION ALL
+    SELECT n + 1 FROM serie WHERE n < 10000
+)
+INSERT INTO test_sans_contraintes  
+SELECT  
+    n AS id,
+    'user' || n || '@test.com' AS email,
+    (n % 80) + 18 AS age
+FROM serie;
 
 -- Avec contraintes (plus lent)
 CREATE TABLE test_avec_contraintes (
@@ -998,11 +1106,16 @@ CREATE TABLE test_avec_contraintes (
 );
 
 -- Même insertion (sera plus lente)
-INSERT INTO test_avec_contraintes (email, age)
-SELECT
-    'user' || value || '@test.com' as email,
-    (value % 80) + 18 as age
-FROM generate_series(1, 10000);
+WITH RECURSIVE serie(n) AS (
+    SELECT 1
+    UNION ALL
+    SELECT n + 1 FROM serie WHERE n < 10000
+)
+INSERT INTO test_avec_contraintes (email, age)  
+SELECT  
+    'user' || n || '@test.com' AS email,
+    (n % 80) + 18 AS age
+FROM serie;
 
 .timer OFF
 ```
@@ -1028,8 +1141,8 @@ CREATE TABLE optimized_checks (
 -- 4. Désactiver temporairement les contraintes pour les imports massifs
 PRAGMA foreign_keys = OFF;
 -- ... import massif ...
-PRAGMA foreign_key_check;  -- Vérifier après import
-PRAGMA foreign_keys = ON;
+PRAGMA foreign_key_check;  -- Vérifier après import  
+PRAGMA foreign_keys = ON;  
 ```
 
 ### 📊 Monitoring des contraintes
@@ -1045,14 +1158,35 @@ CREATE TABLE contrainte_violations (
     timestamp TEXT DEFAULT (datetime('now'))
 );
 
--- Trigger pour logger les violations (exemple pour une table)
-CREATE TRIGGER log_violations_users
-AFTER INSERT ON users
-WHEN NEW.email NOT LIKE '%@%.%'
-BEGIN
+-- ⚠️ ATTENTION — piège fréquent : ne PAS combiner INSERT-d'audit + RAISE(ABORT)
+-- dans le même trigger ! Le RAISE(ABORT) annule TOUTE la transaction en cours,
+-- y compris l'INSERT dans la table d'audit. Résultat : on rejette l'opération
+-- ET on perd la trace du rejet.
+
+-- ❌ Trigger BUGGÉ — l'INSERT d'audit est annulé par le RAISE(ABORT)
+-- CREATE TRIGGER log_violations_users
+-- AFTER INSERT ON users
+-- WHEN NEW.email NOT LIKE '%@%.%'
+-- BEGIN
+--     INSERT INTO contrainte_violations (...) VALUES (...);   -- annulé par ABORT
+--     SELECT RAISE(ABORT, 'Email format invalide');           -- annule tout
+-- END;
+
+-- ✅ Approche correcte : valider via CHECK / trigger BEFORE INSERT
+-- et logger les rejets côté application (try/except qui écrit dans la table d'audit
+-- via une connexion SQLite séparée, ou un fichier de log).
+CREATE TABLE users_v2 (
+    id    INTEGER PRIMARY KEY,
+    email TEXT NOT NULL CHECK (email LIKE '%@%.%')
+);
+-- Le CHECK lève une erreur que l'application peut intercepter et logger comme elle veut.
+
+-- ✅ Audit des opérations RÉUSSIES (sans abort) : on logge seulement ce qui a passé
+CREATE TRIGGER audit_users_insert_ok  
+AFTER INSERT ON users_v2  
+BEGIN  
     INSERT INTO contrainte_violations (table_name, contrainte_type, error_message, data_attempted)
-    VALUES ('users', 'CHECK email', 'Email format invalide', NEW.email);
-    SELECT RAISE(ABORT, 'Email format invalide');
+    VALUES ('users_v2', 'INSERT', 'Insertion réussie', NEW.email);
 END;
 ```
 
@@ -1077,15 +1211,15 @@ CREATE TABLE documents (
 );
 
 -- Vue pour les documents actifs
-CREATE VIEW documents_actifs AS
-SELECT id, titre, contenu
-FROM documents
-WHERE supprime = 0;
+CREATE VIEW documents_actifs AS  
+SELECT id, titre, contenu  
+FROM documents  
+WHERE supprime = 0;  
 
 -- Trigger pour soft delete
-CREATE TRIGGER soft_delete_document
-INSTEAD OF DELETE ON documents_actifs
-BEGIN
+CREATE TRIGGER soft_delete_document  
+INSTEAD OF DELETE ON documents_actifs  
+BEGIN  
     UPDATE documents
     SET supprime = 1, date_suppression = datetime('now')
     WHERE id = OLD.id;
@@ -1112,10 +1246,10 @@ CREATE TABLE articles_versions (
 );
 
 -- Trigger : Une seule version actuelle par article
-CREATE TRIGGER version_actuelle_unique
-BEFORE UPDATE ON articles_versions
-WHEN NEW.actuel = 1 AND OLD.actuel = 0
-BEGIN
+CREATE TRIGGER version_actuelle_unique  
+BEFORE UPDATE ON articles_versions  
+WHEN NEW.actuel = 1 AND OLD.actuel = 0  
+BEGIN  
     UPDATE articles_versions
     SET actuel = 0
     WHERE article_id = NEW.article_id AND actuel = 1;
@@ -1146,10 +1280,10 @@ CREATE TABLE commandes_etats (
 );
 
 -- Trigger pour valider les transitions d'état
-CREATE TRIGGER valider_transition_etat
-BEFORE UPDATE ON commandes_etats
-WHEN NEW.etat != OLD.etat
-BEGIN
+CREATE TRIGGER valider_transition_etat  
+BEFORE UPDATE ON commandes_etats  
+WHEN NEW.etat != OLD.etat  
+BEGIN  
     SELECT CASE
         -- Transitions autorisées depuis 'brouillon'
         WHEN OLD.etat = 'brouillon' AND NEW.etat NOT IN ('confirmee', 'annulee') THEN
@@ -1171,8 +1305,17 @@ BEGIN
         WHEN OLD.etat IN ('livree', 'annulee') THEN
             RAISE(ABORT, 'Impossible de modifier une commande livree ou annulee')
     END;
+END;
 
-    -- Mettre à jour la date de modification
+-- ⚠️ Note importante : SQLite ne permet pas de modifier `NEW.colonne` dans un trigger
+-- (contrairement à PostgreSQL). Pour mettre à jour `date_modification` automatiquement,
+-- on utilise un trigger AFTER UPDATE séparé qui ne re-déclenche pas le précédent
+-- car la condition `WHEN NEW.etat != OLD.etat` ne sera pas vraie pour cette MAJ
+-- ciblée sur date_modification uniquement.
+CREATE TRIGGER maj_date_modification_commande  
+AFTER UPDATE ON commandes_etats  
+WHEN NEW.date_modification = OLD.date_modification  -- Évite la récursion  
+BEGIN  
     UPDATE commandes_etats
     SET date_modification = datetime('now')
     WHERE id = NEW.id;
@@ -1226,12 +1369,14 @@ CREATE TABLE clients (
     pays TEXT DEFAULT 'France',
     date_inscription TEXT DEFAULT (date('now')),
 
-    -- Client majeur
-    CHECK (date('now') >= date(date_naissance, '+18 years')),
+    -- Client majeur À LA DATE D'INSCRIPTION (vérification déterministe sur la ligne)
+    CHECK (date_inscription >= date(date_naissance, '+18 years')),
     UNIQUE (nom, prenom, date_naissance)  -- Éviter les doublons
 );
 
 -- Réservations avec contraintes métier complexes
+-- ⚠️ IMPORTANT : SQLite INTERDIT les sous-requêtes (SELECT) dans CHECK.
+-- Les vérifications qui dépendent d'autres tables doivent être faites avec des TRIGGER (voir plus bas).
 CREATE TABLE reservations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     numero_reservation TEXT UNIQUE NOT NULL,
@@ -1250,26 +1395,45 @@ CREATE TABLE reservations (
     FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE RESTRICT,
     FOREIGN KEY (chambre_numero) REFERENCES chambres(numero) ON UPDATE CASCADE,
 
-    -- Contraintes métier essentielles
-    CHECK (date_depart > date_arrivee),  -- Départ après arrivée
-    CHECK (date_arrivee >= date('now')), -- Pas de réservation dans le passé
-    CHECK (nombre_adultes + nombre_enfants <=
-        (SELECT capacite_max FROM types_chambres tc
-         JOIN chambres c ON tc.code = c.type_code
-         WHERE c.numero = chambre_numero)
-    ), -- Capacité respectée
+    -- Contraintes métier qui restent EXPRIMABLES en CHECK (sans sous-requête)
+    CHECK (date_depart > date_arrivee),                -- Départ après arrivée
+    CHECK (date_arrivee >= date(date_creation)),       -- Pas de réservation dans le passé (par rapport à la création)
 
-    -- Pas de chevauchement de réservations
-    UNIQUE (chambre_numero, date_arrivee),
+    -- Une chambre = au plus une réservation par date d'arrivée
+    UNIQUE (chambre_numero, date_arrivee)
 
-    -- Prix cohérent (au moins le prix de base * nombre de nuits)
-    CHECK (prix_total >=
-        (julianday(date_depart) - julianday(date_arrivee)) *
-        (SELECT prix_base FROM types_chambres tc
-         JOIN chambres c ON tc.code = c.type_code
-         WHERE c.numero = chambre_numero)
-    )
+    -- ⚠️ Les contraintes "capacité respectée" et "prix minimum" dépendent
+    --    d'autres tables → impossibles en CHECK direct, mises en TRIGGER ci-dessous.
 );
+
+-- TRIGGER : Vérifier la capacité maximale de la chambre
+CREATE TRIGGER check_capacite_chambre  
+BEFORE INSERT ON reservations  
+BEGIN  
+    SELECT CASE
+        WHEN NEW.nombre_adultes + NEW.nombre_enfants > (
+            SELECT tc.capacite_max
+            FROM types_chambres tc
+            JOIN chambres c ON tc.code = c.type_code
+            WHERE c.numero = NEW.chambre_numero
+        )
+        THEN RAISE(ABORT, 'Capacité de la chambre dépassée')
+    END;
+END;
+
+-- TRIGGER : Vérifier que le prix total respecte le tarif minimum
+CREATE TRIGGER check_prix_minimum  
+BEFORE INSERT ON reservations  
+BEGIN  
+    SELECT CASE
+        WHEN NEW.prix_total < (julianday(NEW.date_depart) - julianday(NEW.date_arrivee)) *
+            (SELECT tc.prix_base
+             FROM types_chambres tc
+             JOIN chambres c ON tc.code = c.type_code
+             WHERE c.numero = NEW.chambre_numero)
+        THEN RAISE(ABORT, 'Prix total insuffisant pour la durée et le type de chambre')
+    END;
+END;
 
 -- Services additionnels
 CREATE TABLE services (
@@ -1295,9 +1459,9 @@ CREATE TABLE reservations_services (
 );
 
 -- Trigger : Empêcher les réservations qui se chevauchent
-CREATE TRIGGER empecher_chevauchement
-BEFORE INSERT ON reservations
-WHEN EXISTS (
+CREATE TRIGGER empecher_chevauchement  
+BEFORE INSERT ON reservations  
+WHEN EXISTS (  
     SELECT 1 FROM reservations r
     WHERE r.chambre_numero = NEW.chambre_numero
     AND r.statut NOT IN ('annulee', 'no_show')
@@ -1308,10 +1472,10 @@ BEGIN
 END;
 
 -- Trigger : Générer automatiquement le numéro de réservation
-CREATE TRIGGER generer_numero_reservation
-AFTER INSERT ON reservations
-WHEN NEW.numero_reservation = ''
-BEGIN
+CREATE TRIGGER generer_numero_reservation  
+AFTER INSERT ON reservations  
+WHEN NEW.numero_reservation = ''  
+BEGIN  
     UPDATE reservations
     SET numero_reservation = 'RES' || strftime('%Y%m%d', 'now') || '-' ||
         printf('%04d', NEW.id)
@@ -1319,19 +1483,19 @@ BEGIN
 END;
 
 -- Trigger : Mettre à jour le statut de la chambre
-CREATE TRIGGER maj_statut_chambre_arrivee
-AFTER UPDATE ON reservations
-WHEN NEW.statut = 'arrivee' AND OLD.statut = 'confirmee'
-BEGIN
+CREATE TRIGGER maj_statut_chambre_arrivee  
+AFTER UPDATE ON reservations  
+WHEN NEW.statut = 'arrivee' AND OLD.statut = 'confirmee'  
+BEGIN  
     UPDATE chambres
     SET statut = 'occupee'
     WHERE numero = NEW.chambre_numero;
 END;
 
-CREATE TRIGGER maj_statut_chambre_depart
-AFTER UPDATE ON reservations
-WHEN NEW.statut = 'terminee' AND OLD.statut = 'arrivee'
-BEGIN
+CREATE TRIGGER maj_statut_chambre_depart  
+AFTER UPDATE ON reservations  
+WHEN NEW.statut = 'terminee' AND OLD.statut = 'arrivee'  
+BEGIN  
     UPDATE chambres
     SET statut = 'disponible'
     WHERE numero = NEW.chambre_numero;
@@ -1368,10 +1532,12 @@ INSERT INTO clients (civilite, nom, prenom, email, telephone, date_naissance, vi
     ('M', 'Durand', 'Pierre', 'pierre.durand@email.com', '0345678901', '1975-12-10', 'Marseille', '13001');
 
 -- Réservations avec numéro auto-généré
+-- ⚠️ Les dates doivent être >= aujourd'hui à cause du CHECK (date_arrivee >= date(date_creation))
+-- Pour rester portable dans le temps, on les exprime relativement à 'now'.
 INSERT INTO reservations (numero_reservation, client_id, chambre_numero, date_arrivee, date_depart, nombre_adultes, prix_total) VALUES
-    ('', 1, '201', '2024-07-15', '2024-07-18', 2, 387.00),  -- 3 nuits * 129€
-    ('', 2, '202', '2024-07-20', '2024-07-25', 2, 995.00),  -- 5 nuits * 199€
-    ('', 3, '301', '2024-08-01', '2024-08-05', 4, 1196.00); -- 4 nuits * 299€
+    ('', 1, '201', date('now', '+30 days'), date('now', '+33 days'), 2, 387.00),   -- 3 nuits * 129€
+    ('', 2, '202', date('now', '+45 days'), date('now', '+50 days'), 2, 995.00),   -- 5 nuits * 199€
+    ('', 3, '301', date('now', '+60 days'), date('now', '+64 days'), 4, 1196.00);  -- 4 nuits * 299€
 
 -- Services additionnels
 INSERT INTO reservations_services (reservation_id, service_code, quantite, prix_unitaire) VALUES
@@ -1394,11 +1560,11 @@ SELECT
     r.nombre_adultes + r.nombre_enfants as total_personnes,
     r.prix_total,
     r.statut
-FROM reservations r
-JOIN clients cl ON r.client_id = cl.id
-JOIN chambres ch ON r.chambre_numero = ch.numero
-JOIN types_chambres tc ON ch.type_code = tc.code
-ORDER BY r.date_arrivee;
+FROM reservations r  
+JOIN clients cl ON r.client_id = cl.id  
+JOIN chambres ch ON r.chambre_numero = ch.numero  
+JOIN types_chambres tc ON ch.type_code = tc.code  
+ORDER BY r.date_arrivee;  
 
 -- Occupation par mois
 SELECT
@@ -1406,40 +1572,40 @@ SELECT
     COUNT(*) as nb_reservations,
     SUM(julianday(date_depart) - julianday(date_arrivee)) as total_nuits,
     AVG(prix_total) as prix_moyen
-FROM reservations
-WHERE statut != 'annulee'
-GROUP BY strftime('%Y-%m', date_arrivee)
-ORDER BY mois;
+FROM reservations  
+WHERE statut != 'annulee'  
+GROUP BY strftime('%Y-%m', date_arrivee)  
+ORDER BY mois;  
 
 -- Vérifier l'intégrité
-PRAGMA integrity_check;
-PRAGMA foreign_key_check;
+PRAGMA integrity_check;  
+PRAGMA foreign_key_check;  
 
 -- Tests d'erreurs
 
--- ❌ Réservation qui se chevauche
-INSERT INTO reservations (numero_reservation, client_id, chambre_numero, date_arrivee, date_depart, nombre_adultes, prix_total)
-VALUES ('TEST', 1, '201', '2024-07-16', '2024-07-19', 1, 258.00);
+-- ❌ Réservation qui se chevauche (chambre 201 déjà réservée j+30 à j+33)
+INSERT INTO reservations (numero_reservation, client_id, chambre_numero, date_arrivee, date_depart, nombre_adultes, prix_total)  
+VALUES ('TEST', 1, '201', date('now', '+31 days'), date('now', '+34 days'), 1, 258.00);  
 -- Error: Cette chambre est déjà réservée pour ces dates
 
--- ❌ Capacité dépassée
-INSERT INTO reservations (numero_reservation, client_id, chambre_numero, date_arrivee, date_depart, nombre_adultes, prix_total)
-VALUES ('TEST2', 1, '101', '2024-09-01', '2024-09-03', 3, 178.00);
--- Error: CHECK constraint failed (capacité)
+-- ❌ Capacité dépassée (chambre 101 = SINGLE, capacité 1)
+INSERT INTO reservations (numero_reservation, client_id, chambre_numero, date_arrivee, date_depart, nombre_adultes, prix_total)  
+VALUES ('TEST2', 1, '101', date('now', '+90 days'), date('now', '+92 days'), 3, 178.00);  
+-- Error: Capacité de la chambre dépassée
 
--- ❌ Prix trop bas
-INSERT INTO reservations (numero_reservation, client_id, chambre_numero, date_arrivee, date_depart, nombre_adultes, prix_total)
-VALUES ('TEST3', 1, '102', '2024-09-01', '2024-09-03', 1, 50.00);
--- Error: CHECK constraint failed (prix minimum)
+-- ❌ Prix trop bas (chambre 102 = DOUBLE à 129€/nuit × 2 nuits = 258€ minimum)
+INSERT INTO reservations (numero_reservation, client_id, chambre_numero, date_arrivee, date_depart, nombre_adultes, prix_total)  
+VALUES ('TEST3', 1, '102', date('now', '+90 days'), date('now', '+92 days'), 1, 50.00);  
+-- Error: Prix total insuffisant pour la durée et le type de chambre
 
--- ✅ Réservation valide
-INSERT INTO reservations (numero_reservation, client_id, chambre_numero, date_arrivee, date_depart, nombre_adultes, prix_total)
-VALUES ('', 1, '102', '2024-09-01', '2024-09-03', 1, 258.00);
+-- ✅ Réservation valide (chambre 102 à 258€ pour 2 nuits, 1 adulte)
+INSERT INTO reservations (numero_reservation, client_id, chambre_numero, date_arrivee, date_depart, nombre_adultes, prix_total)  
+VALUES ('', 1, '102', date('now', '+90 days'), date('now', '+92 days'), 1, 258.00);  
 
 -- Vérifier la génération automatique du numéro
-SELECT numero_reservation, client_id, chambre_numero, date_arrivee, prix_total
-FROM reservations
-WHERE client_id = 1 AND chambre_numero = '102';
+SELECT numero_reservation, client_id, chambre_numero, date_arrivee, prix_total  
+FROM reservations  
+WHERE client_id = 1 AND chambre_numero = '102';  
 ```
 
 ## Maintenance et évolution des contraintes
@@ -1458,10 +1624,10 @@ SELECT
 FROM clients;
 
 -- 2. Créer une table de sauvegarde pour les données non conformes
-CREATE TABLE clients_mineurs_archive AS
-SELECT *, 'Migration age minimum' as raison_archive
-FROM clients
-WHERE date('now') < date(date_naissance, '+16 years');
+CREATE TABLE clients_mineurs_archive AS  
+SELECT *, 'Migration age minimum' as raison_archive  
+FROM clients  
+WHERE date('now') < date(date_naissance, '+16 years');  
 
 -- 3. Migration avec transaction
 BEGIN TRANSACTION;
@@ -1481,31 +1647,31 @@ CREATE TABLE clients_new (
     pays TEXT DEFAULT 'France',
     date_inscription TEXT DEFAULT (date('now')),
 
-    -- Nouvelle contrainte : âge minimum 16 ans
-    CHECK (date('now') >= date(date_naissance, '+16 years')),
+    -- Contrainte déterministe : 16 ans révolus À LA DATE D'INSCRIPTION
+    CHECK (date_inscription >= date(date_naissance, '+16 years')),
     UNIQUE (nom, prenom, date_naissance)
 );
 
 -- Copier seulement les données conformes
-INSERT INTO clients_new
-SELECT * FROM clients
-WHERE date('now') >= date(date_naissance, '+16 years');
+INSERT INTO clients_new  
+SELECT * FROM clients  
+WHERE date('now') >= date(date_naissance, '+16 years');  
 
 -- Gérer les références dans les autres tables
-UPDATE reservations
-SET commentaires = COALESCE(commentaires || '; ', '') || 'Client mineur archivé'
-WHERE client_id IN (SELECT id FROM clients_mineurs_archive);
+UPDATE reservations  
+SET commentaires = COALESCE(commentaires || '; ', '') || 'Client mineur archivé'  
+WHERE client_id IN (SELECT id FROM clients_mineurs_archive);  
 
 -- Remplacer l'ancienne table
-DROP TABLE clients;
-ALTER TABLE clients_new RENAME TO clients;
+DROP TABLE clients;  
+ALTER TABLE clients_new RENAME TO clients;  
 
 COMMIT;
 
 -- 4. Vérification post-migration
-SELECT COUNT(*) as clients_restants FROM clients;
-SELECT COUNT(*) as clients_archives FROM clients_mineurs_archive;
-PRAGMA foreign_key_check(reservations);
+SELECT COUNT(*) as clients_restants FROM clients;  
+SELECT COUNT(*) as clients_archives FROM clients_mineurs_archive;  
+PRAGMA foreign_key_check(reservations);  
 ```
 
 ### 📋 Audit et monitoring des contraintes
@@ -1528,33 +1694,36 @@ CREATE TABLE contraintes_audit (
 );
 
 -- Trigger d'audit pour les violations UNIQUE sur email
-CREATE TRIGGER audit_email_unique
-BEFORE INSERT ON clients
-WHEN NEW.email IN (SELECT email FROM clients)
-BEGIN
+-- ⚠️ Voir l'avertissement précédent : INSERT + RAISE(ABORT) annulent tout !
+-- Approche corrigée : on logge seulement les INSERTs réussis (AFTER INSERT)
+-- ou on logge depuis l'application en interceptant l'erreur.
+CREATE TRIGGER audit_clients_insert_ok  
+AFTER INSERT ON clients  
+BEGIN  
     INSERT INTO contraintes_audit (
         table_name, contrainte_type, contrainte_detail,
         action_tentee, valeurs_rejetees, message_erreur
     ) VALUES (
-        'clients', 'UNIQUE', 'email', 'INSERT',
-        'email=' || NEW.email || ', nom=' || NEW.nom,
-        'Tentative d''insertion avec email existant'
+        'clients', 'INSERT', 'OK', 'INSERT',
+        'email=' || COALESCE(NEW.email, 'NULL') || ', nom=' || COALESCE(NEW.nom, 'NULL'),
+        'Insertion réussie'
     );
-    SELECT RAISE(ABORT, 'Email déjà utilisé');
 END;
+-- Note : la contrainte UNIQUE sur email est déjà active sur la table clients ;
+-- elle lève l'erreur d'elle-même, à intercepter côté application.
 
 -- Vue pour le monitoring
-CREATE VIEW violations_recentes AS
-SELECT
+CREATE VIEW violations_recentes AS  
+SELECT  
     date(timestamp) as date_violation,
     table_name,
     contrainte_type,
     COUNT(*) as nombre_violations,
     COUNT(CASE WHEN corrige = 1 THEN 1 END) as corrigees
-FROM contraintes_audit
-WHERE timestamp >= date('now', '-30 days')
-GROUP BY date(timestamp), table_name, contrainte_type
-ORDER BY date_violation DESC, nombre_violations DESC;
+FROM contraintes_audit  
+WHERE timestamp >= date('now', '-30 days')  
+GROUP BY date(timestamp), table_name, contrainte_type  
+ORDER BY date_violation DESC, nombre_violations DESC;  
 
 -- Rapport quotidien des violations
 SELECT * FROM violations_recentes;
@@ -1580,32 +1749,32 @@ CREATE TABLE tests_contraintes (
 
 -- Fonction de test générique (simulée avec des requêtes)
 -- Test 1 : PRIMARY KEY doit être unique
-INSERT INTO tests_contraintes (test_name, table_tested, contrainte_tested, expected_result)
-VALUES ('PK_Unique_Test', 'clients', 'PRIMARY KEY', 'FAILURE');
+INSERT INTO tests_contraintes (test_name, table_tested, contrainte_tested, expected_result)  
+VALUES ('PK_Unique_Test', 'clients', 'PRIMARY KEY', 'FAILURE');  
 
 -- Simuler l'insertion qui doit échouer
 -- Cette insertion va échouer et on capture le résultat
 -- INSERT INTO clients (id, nom, prenom) VALUES (1, 'Test', 'Doublon');
 
 -- Test 2 : Email UNIQUE
-INSERT INTO tests_contraintes (test_name, table_tested, contrainte_tested, expected_result)
-VALUES ('Email_Unique_Test', 'clients', 'UNIQUE email', 'FAILURE');
+INSERT INTO tests_contraintes (test_name, table_tested, contrainte_tested, expected_result)  
+VALUES ('Email_Unique_Test', 'clients', 'UNIQUE email', 'FAILURE');  
 
 -- Test 3 : CHECK âge minimum
-INSERT INTO tests_contraintes (test_name, table_tested, contrainte_tested, expected_result)
-VALUES ('Age_Minimum_Test', 'clients', 'CHECK age', 'FAILURE');
+INSERT INTO tests_contraintes (test_name, table_tested, contrainte_tested, expected_result)  
+VALUES ('Age_Minimum_Test', 'clients', 'CHECK age', 'FAILURE');  
 
 -- Test 4 : FOREIGN KEY valid
-INSERT INTO tests_contraintes (test_name, table_tested, contrainte_tested, expected_result)
-VALUES ('FK_Valid_Test', 'reservations', 'FOREIGN KEY client_id', 'SUCCESS');
+INSERT INTO tests_contraintes (test_name, table_tested, contrainte_tested, expected_result)  
+VALUES ('FK_Valid_Test', 'reservations', 'FOREIGN KEY client_id', 'SUCCESS');  
 
 -- Test 5 : FOREIGN KEY invalid
-INSERT INTO tests_contraintes (test_name, table_tested, contrainte_tested, expected_result)
-VALUES ('FK_Invalid_Test', 'reservations', 'FOREIGN KEY client_id', 'FAILURE');
+INSERT INTO tests_contraintes (test_name, table_tested, contrainte_tested, expected_result)  
+VALUES ('FK_Invalid_Test', 'reservations', 'FOREIGN KEY client_id', 'FAILURE');  
 
 -- Rapport des tests
-CREATE VIEW rapport_tests AS
-SELECT
+CREATE VIEW rapport_tests AS  
+SELECT  
     test_name,
     table_tested,
     contrainte_tested,
@@ -1613,8 +1782,8 @@ SELECT
     CASE WHEN passed = 1 THEN '✅ PASS' ELSE '❌ FAIL' END as status,
     error_message,
     timestamp
-FROM tests_contraintes
-ORDER BY timestamp DESC;
+FROM tests_contraintes  
+ORDER BY timestamp DESC;  
 ```
 
 ## Documentation et bonnes pratiques finales
@@ -1654,15 +1823,15 @@ INSERT INTO contraintes_documentation (
     'clients', 'age_minimum', 'CHECK',
     'Le client doit avoir au moins 16 ans',
     'Contrainte légale : les mineurs ne peuvent pas réserver seuls',
-    'date_naissance: 2000-01-01 (pour 2024)',
-    'date_naissance: 2010-01-01 (pour 2024)'
+    'date_naissance: 2005-01-01 (≥ 16 ans aujourd''hui)',
+    'date_naissance: 2015-01-01 (< 16 ans aujourd''hui)'
 ),
 (
     'reservations', 'dates_coherentes', 'CHECK',
     'La date de départ doit être postérieure à la date d''arrivée',
     'Logique métier : impossible de partir avant d''arriver',
-    'arrivée: 2024-07-01, départ: 2024-07-05',
-    'arrivée: 2024-07-05, départ: 2024-07-01'
+    'arrivée: 2026-07-01, départ: 2026-07-05',
+    'arrivée: 2026-07-05, départ: 2026-07-01'
 ),
 (
     'reservations', 'capacite_chambre', 'CHECK',
@@ -1673,16 +1842,16 @@ INSERT INTO contraintes_documentation (
 );
 
 -- Vue de documentation utilisateur
-CREATE VIEW guide_contraintes AS
-SELECT
+CREATE VIEW guide_contraintes AS  
+SELECT  
     table_name as "Table",
     contrainte_type as "Type",
     description as "Description",
     justification_metier as "Pourquoi ?",
     exemples_valides as "Exemples valides",
     exemples_invalides as "À éviter"
-FROM contraintes_documentation
-ORDER BY table_name, contrainte_type;
+FROM contraintes_documentation  
+ORDER BY table_name, contrainte_type;  
 
 -- Afficher le guide
 SELECT * FROM guide_contraintes;
@@ -1789,3 +1958,5 @@ Vous devriez maintenant être capable de :
 **💡 Dans le prochain chapitre**, nous explorerons les requêtes de base (SELECT, WHERE, ORDER BY, GROUP BY, HAVING) pour extraire efficacement les informations de vos données maintenant parfaitement contraintes et cohérentes.
 
 **🎉 Félicitations !** Vous maîtrisez maintenant l'art de protéger et structurer vos données avec les contraintes SQLite. Vos bases de données sont désormais robustes et fiables !
+
+⏭️ [2.5 Requêtes de base : SELECT, WHERE, ORDER BY, GROUP BY, HAVING](/02-bases-langage-sql-sqlite/05-requetes-base-select-where-order-by-group-by-having.md)

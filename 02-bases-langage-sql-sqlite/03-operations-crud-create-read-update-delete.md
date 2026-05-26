@@ -23,9 +23,11 @@ Avant de pratiquer les opérations CRUD, créons une base de données simple mai
 -- Créer notre base d'exercices
 sqlite3 boutique_crud.db
 
--- Configuration optimale
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
+-- Configuration optimale (rappel du module 2.2)
+PRAGMA journal_mode = WAL;       -- persistant  
+PRAGMA synchronous = NORMAL;     -- par connexion  
+PRAGMA busy_timeout = 5000;      -- par connexion  
+PRAGMA foreign_keys = ON;        -- par connexion — indispensable pour activer les FK  
 
 -- Création des tables d'exemple
 CREATE TABLE clients (
@@ -73,8 +75,8 @@ L'instruction INSERT permet d'ajouter de nouvelles données :
 INSERT INTO table (colonne1, colonne2, ...) VALUES (valeur1, valeur2, ...);
 
 -- Exemple concret
-INSERT INTO clients (nom, prenom, email, telephone)
-VALUES ('Dupont', 'Jean', 'jean.dupont@email.com', '0123456789');
+INSERT INTO clients (nom, prenom, email, telephone)  
+VALUES ('Dupont', 'Jean', 'jean.dupont@email.com', '0123456789');  
 
 -- Vérifier l'insertion
 SELECT * FROM clients;
@@ -91,8 +93,8 @@ INSERT INTO clients (nom, prenom, email, telephone) VALUES
     ('Bernard', 'Paul', 'paul.bernard@email.com', '0567890123');
 
 -- Vérifier toutes les insertions
-SELECT COUNT(*) as nombre_clients FROM clients;
-SELECT * FROM clients ORDER BY id;
+SELECT COUNT(*) as nombre_clients FROM clients;  
+SELECT * FROM clients ORDER BY id;  
 ```
 
 ### 🛍️ Insertion avec valeurs par défaut
@@ -105,8 +107,8 @@ INSERT INTO clients (nom, prenom) VALUES ('Moreau', 'Julie');
 INSERT INTO clients (nom, prenom, actif) VALUES ('Petit', 'Luc', 0);
 
 -- Voir le résultat avec les dates automatiques
-SELECT id, nom, prenom, date_inscription, actif FROM clients
-WHERE nom IN ('Moreau', 'Petit');
+SELECT id, nom, prenom, date_inscription, actif FROM clients  
+WHERE nom IN ('Moreau', 'Petit');  
 ```
 
 ### 🏷️ Insertion de produits avec différents types
@@ -132,42 +134,66 @@ FROM produits;
 
 ```sql
 -- Insérer et récupérer l'ID généré
-INSERT INTO clients (nom, prenom, email)
-VALUES ('Nouveau', 'Client', 'nouveau@email.com');
+INSERT INTO clients (nom, prenom, email)  
+VALUES ('Nouveau', 'Client', 'nouveau@email.com');  
 
 -- Voir le dernier ID inséré
-SELECT last_insert_rowid() as dernier_id;
-
--- Utiliser cet ID pour créer une commande
-INSERT INTO commandes (client_id, total)
-VALUES (last_insert_rowid(), 0);
-
--- Vérifier la commande créée
-SELECT c.nom, c.prenom, cmd.id as commande_id, cmd.date_commande
-FROM clients c
-JOIN commandes cmd ON c.id = cmd.client_id
-WHERE cmd.id = last_insert_rowid();
+SELECT last_insert_rowid() AS dernier_id;
 ```
+
+> ⚠️ **Attention à `last_insert_rowid()`** : cette fonction renvoie l'ID du **dernier INSERT exécuté sur cette connexion**. Si vous faites un autre INSERT entre-temps, la valeur change. **Toujours capturer la valeur immédiatement** :  
+> ```sql
+> -- ❌ Risque : last_insert_rowid() a peut-être changé entre les deux appels
+> INSERT INTO clients (nom, prenom) VALUES ('Test', 'Alice');
+> INSERT INTO commandes (client_id) VALUES (last_insert_rowid());  -- OK ici
+> INSERT INTO logs (msg) VALUES ('Nouvelle commande');             -- Modifie le rowid !
+> SELECT last_insert_rowid();   -- Donne l'id du log, pas de la commande !
+> ```
+
+**✨ Alternative moderne : `RETURNING`** (depuis SQLite **3.35 (2021)**) :
+```sql
+-- Récupérer directement l'ID (et d'autres colonnes) avec l'INSERT
+INSERT INTO clients (nom, prenom, email)  
+VALUES ('Nouveau', 'Client', 'nouveau@email.com')  
+RETURNING id, datetime('now') AS quand;  
+
+-- Utilisable aussi avec UPDATE et DELETE
+DELETE FROM clients WHERE actif = 0  
+RETURNING id, nom, prenom;  -- Voir ce qu'on a supprimé  
+```
+`RETURNING` est plus sûr (atomique) et plus expressif que `last_insert_rowid()` — utilisez-le quand votre version SQLite est ≥ 3.35.
 
 ### ⚠️ Gestion des erreurs d'insertion
 
 ```sql
 -- Tentative d'insertion avec email dupliqué (va échouer)
-INSERT INTO clients (nom, prenom, email)
-VALUES ('Test', 'Doublon', 'jean.dupont@email.com');
+INSERT INTO clients (nom, prenom, email)  
+VALUES ('Test', 'Doublon', 'jean.dupont@email.com');  
 -- Error: UNIQUE constraint failed: clients.email
 
--- Insertion avec gestion du conflit (SQLite 3.24+)
-INSERT OR IGNORE INTO clients (nom, prenom, email)
-VALUES ('Test', 'Ignore', 'jean.dupont@email.com');
+-- Insertion avec gestion du conflit (disponible depuis SQLite 3.0)
+INSERT OR IGNORE INTO clients (nom, prenom, email)  
+VALUES ('Test', 'Ignore', 'jean.dupont@email.com');  
 
--- Alternative : mise à jour en cas de conflit
-INSERT OR REPLACE INTO clients (nom, prenom, email)
-VALUES ('Dupont', 'Jean-Nouveau', 'jean.dupont@email.com');
+-- Alternative : mise à jour en cas de conflit (REMPLACE toute la ligne)
+INSERT OR REPLACE INTO clients (nom, prenom, email)  
+VALUES ('Dupont', 'Jean-Nouveau', 'jean.dupont@email.com');  
+
+-- UPSERT moderne (depuis SQLite 3.24, juin 2018) — plus puissant et précis
+INSERT INTO clients (nom, prenom, email)  
+VALUES ('Dupont', 'Jean-Nouveau', 'jean.dupont@email.com')  
+ON CONFLICT(email) DO UPDATE SET  
+    nom = excluded.nom,
+    prenom = excluded.prenom;
+-- excluded.<col> = la valeur qu'on a tenté d'insérer
 
 -- Vérifier le résultat
 SELECT * FROM clients WHERE email = 'jean.dupont@email.com';
 ```
+
+> 💡 **Choisir entre OR REPLACE et ON CONFLICT** :  
+> - `INSERT OR REPLACE` : **supprime la ligne en conflit** puis insère la nouvelle. Attention, cascade les triggers DELETE et peut perdre des données dans d'autres colonnes non spécifiées.  
+> - `INSERT … ON CONFLICT … DO UPDATE` : effectue un vrai UPDATE ciblé sur la ligne existante. **Recommandé en pratique**.
 
 ## READ - Lire des données (SELECT)
 
@@ -181,10 +207,13 @@ SELECT * FROM clients;
 SELECT nom, prenom, email FROM clients;
 
 -- Sélection avec alias pour plus de clarté
+-- ⚠️ Utilisez des guillemets DOUBLES (ou des crochets) pour les alias contenant
+--   des espaces. Les guillemets SIMPLES sont des littéraux de chaîne en SQL standard ;
+--   SQLite les tolère par compatibilité, mais c'est à éviter.
 SELECT
-    nom AS 'Nom de famille',
-    prenom AS 'Prénom',
-    email AS 'Adresse email'
+    nom    AS "Nom de famille",
+    prenom AS "Prénom",
+    email  AS "Adresse email"
 FROM clients;
 ```
 
@@ -195,21 +224,21 @@ FROM clients;
 SELECT * FROM clients WHERE actif = 1;
 
 -- Filtres multiples avec AND
-SELECT nom, prenom, email
-FROM clients
-WHERE actif = 1 AND nom LIKE 'D%';
+SELECT nom, prenom, email  
+FROM clients  
+WHERE actif = 1 AND nom LIKE 'D%';  
 
 -- Filtres avec OR
-SELECT * FROM produits
-WHERE categorie = 'Informatique' OR prix < 100;
+SELECT * FROM produits  
+WHERE categorie = 'Informatique' OR prix < 100;  
 
 -- Filtres avec IN
-SELECT * FROM produits
-WHERE categorie IN ('Informatique', 'Audio');
+SELECT * FROM produits  
+WHERE categorie IN ('Informatique', 'Audio');  
 
 -- Filtres avec plage de valeurs
-SELECT nom, prix FROM produits
-WHERE prix BETWEEN 50 AND 150;
+SELECT nom, prix FROM produits  
+WHERE prix BETWEEN 50 AND 150;  
 ```
 
 ### 📊 Tri et limitation
@@ -222,26 +251,26 @@ SELECT nom, prix FROM produits ORDER BY prix;
 SELECT nom, prix FROM produits ORDER BY prix DESC;
 
 -- Tri multiple
-SELECT nom, prix, categorie FROM produits
-ORDER BY categorie, prix DESC;
+SELECT nom, prix, categorie FROM produits  
+ORDER BY categorie, prix DESC;  
 
 -- Limitation du nombre de résultats
-SELECT nom, prix FROM produits
-ORDER BY prix DESC
-LIMIT 3;
+SELECT nom, prix FROM produits  
+ORDER BY prix DESC  
+LIMIT 3;  
 
 -- Pagination avec OFFSET
-SELECT nom, prix FROM produits
-ORDER BY nom
-LIMIT 3 OFFSET 3;  -- Affiche les résultats 4, 5, 6
+SELECT nom, prix FROM produits  
+ORDER BY nom  
+LIMIT 3 OFFSET 3;  -- Affiche les résultats 4, 5, 6  
 ```
 
 ### 🔢 Fonctions d'agrégation
 
 ```sql
 -- Compter les enregistrements
-SELECT COUNT(*) as total_clients FROM clients;
-SELECT COUNT(*) as clients_actifs FROM clients WHERE actif = 1;
+SELECT COUNT(*) as total_clients FROM clients;  
+SELECT COUNT(*) as clients_actifs FROM clients WHERE actif = 1;  
 
 -- Valeurs min, max, moyenne
 SELECT
@@ -257,8 +286,8 @@ SELECT
     COUNT(*) as nombre_produits,
     AVG(prix) as prix_moyen,
     SUM(stock) as stock_total
-FROM produits
-GROUP BY categorie;
+FROM produits  
+GROUP BY categorie;  
 ```
 
 ### 🔗 Jointures simples
@@ -272,18 +301,18 @@ SELECT
     cmd.date_commande,
     cmd.statut,
     cmd.total
-FROM clients c
-JOIN commandes cmd ON c.id = cmd.client_id
-ORDER BY cmd.date_commande DESC;
+FROM clients c  
+JOIN commandes cmd ON c.id = cmd.client_id  
+ORDER BY cmd.date_commande DESC;  
 
 -- Jointure avec filtre
 SELECT
     c.nom || ' ' || c.prenom as client_complet,
     COUNT(cmd.id) as nombre_commandes
-FROM clients c
-LEFT JOIN commandes cmd ON c.id = cmd.client_id
-GROUP BY c.id, c.nom, c.prenom
-HAVING COUNT(cmd.id) > 0;
+FROM clients c  
+LEFT JOIN commandes cmd ON c.id = cmd.client_id  
+GROUP BY c.id, c.nom, c.prenom  
+HAVING COUNT(cmd.id) > 0;  
 ```
 
 ## UPDATE - Modifier des données (UPDATE)
@@ -295,30 +324,30 @@ HAVING COUNT(cmd.id) > 0;
 UPDATE table SET colonne = nouvelle_valeur WHERE condition;
 
 -- Exemple : Mettre à jour le téléphone d'un client
-UPDATE clients
-SET telephone = '0123456999'
-WHERE email = 'jean.dupont@email.com';
+UPDATE clients  
+SET telephone = '0123456999'  
+WHERE email = 'jean.dupont@email.com';  
 
 -- Vérifier la modification
-SELECT nom, prenom, telephone
-FROM clients
-WHERE email = 'jean.dupont@email.com';
+SELECT nom, prenom, telephone  
+FROM clients  
+WHERE email = 'jean.dupont@email.com';  
 ```
 
 ### 🔄 Modifications multiples
 
 ```sql
 -- Modifier plusieurs colonnes en même temps
-UPDATE clients
-SET
+UPDATE clients  
+SET  
     telephone = '0987654321',
     email = 'sophie.martin.nouveau@email.com'
 WHERE nom = 'Martin' AND prenom = 'Sophie';
 
 -- Modifier plusieurs enregistrements
-UPDATE produits
-SET prix = prix * 0.9  -- Remise de 10%
-WHERE categorie = 'Informatique';
+UPDATE produits  
+SET prix = prix * 0.9  -- Remise de 10%  
+WHERE categorie = 'Informatique';  
 
 -- Vérifier les modifications
 SELECT nom, prix, categorie FROM produits WHERE categorie = 'Informatique';
@@ -331,22 +360,25 @@ SELECT nom, prix, categorie FROM produits WHERE categorie = 'Informatique';
 UPDATE produits SET stock = stock + 10;
 
 -- Mise à jour conditionnelle avec calcul
-UPDATE produits
-SET prix = CASE
+UPDATE produits  
+SET prix = CASE  
     WHEN stock < 10 THEN prix * 1.1  -- +10% si stock faible
     WHEN stock > 50 THEN prix * 0.95 -- -5% si stock élevé
     ELSE prix  -- Prix inchangé
 END;
 
--- Mise à jour avec sous-requête
-UPDATE commandes
-SET total = (
-    SELECT SUM(p.prix)
+-- Mise à jour avec sous-requête (recalculer le total à partir d'une autre table)
+-- Exemple : appliquer une remise correspondant à 1% de la valeur de stock de la catégorie
+UPDATE commandes  
+SET total = (  
+    SELECT SUM(p.prix * p.stock)
     FROM produits p
     WHERE p.categorie = 'Informatique'
-) * 0.01  -- 1% de la valeur totale des produits informatiques
+) * 0.01
 WHERE statut = 'en_attente';
 ```
+
+> 💡 Contrairement aux `CHECK` qui interdisent les sous-requêtes (voir 2.4), `UPDATE` et `INSERT` les acceptent sans restriction.
 
 ### 🕒 Modifications avec horodatage
 
@@ -355,16 +387,16 @@ WHERE statut = 'en_attente';
 ALTER TABLE clients ADD COLUMN derniere_modification TEXT;
 
 -- Mettre à jour avec timestamp automatique
-UPDATE clients
-SET
+UPDATE clients  
+SET  
     telephone = '0111222333',
     derniere_modification = datetime('now')
 WHERE id = 1;
 
 -- Voir le résultat
-SELECT nom, prenom, telephone, derniere_modification
-FROM clients
-WHERE id = 1;
+SELECT nom, prenom, telephone, derniere_modification  
+FROM clients  
+WHERE id = 1;  
 ```
 
 ### ⚠️ Sécurité des UPDATE
@@ -410,9 +442,9 @@ DELETE FROM clients WHERE actif = 0;
 DELETE FROM produits WHERE stock = 0;
 
 -- Supprimer les anciennes commandes annulées
-DELETE FROM commandes
-WHERE statut = 'annulee'
-AND date_commande < date('now', '-1 year');
+DELETE FROM commandes  
+WHERE statut = 'annulee'  
+AND date_commande < date('now', '-1 year');  
 
 -- Vérifier les suppressions
 SELECT
@@ -429,8 +461,8 @@ DELETE FROM clients WHERE id = 1;
 -- Possible erreur : FOREIGN KEY constraint failed
 
 -- Solution 1 : Supprimer d'abord les commandes liées
-DELETE FROM commandes WHERE client_id = 1;
-DELETE FROM clients WHERE id = 1;
+DELETE FROM commandes WHERE client_id = 1;  
+DELETE FROM clients WHERE id = 1;  
 
 -- Solution 2 : Désactiver plutôt que supprimer
 UPDATE clients SET actif = 0 WHERE id = 1;
@@ -440,10 +472,10 @@ UPDATE clients SET actif = 0 WHERE id = 1;
 
 ```sql
 -- Créer une table de sauvegarde avant suppression
-CREATE TABLE clients_supprimes AS
-SELECT *, datetime('now') as date_suppression
-FROM clients
-WHERE actif = 0;
+CREATE TABLE clients_supprimes AS  
+SELECT *, datetime('now') as date_suppression  
+FROM clients  
+WHERE actif = 0;  
 
 -- Vérifier la sauvegarde
 SELECT COUNT(*) FROM clients_supprimes;
@@ -472,6 +504,122 @@ DELETE FROM logs WHERE id IN (
     WHERE date_log < date('now', '-30 days')
     LIMIT 1000
 );
+```
+
+## Transactions — atomicité des opérations CRUD
+
+### 🔒 Pourquoi grouper les opérations en transaction ?
+
+Une **transaction** regroupe plusieurs instructions SQL en une seule unité **atomique** : soit toutes réussissent (`COMMIT`), soit aucune (`ROLLBACK`). C'est essentiel pour maintenir la **cohérence** des données quand plusieurs opérations sont logiquement liées.
+
+```sql
+-- ❌ SANS transaction : risque de demi-virement si la deuxième instruction échoue
+UPDATE comptes SET solde = solde - 100 WHERE id = 1;
+-- ⚠️ Si une coupure de courant arrive ici, le compte 1 est débité mais
+--    le compte 2 n'est jamais crédité → argent perdu !
+UPDATE comptes SET solde = solde + 100 WHERE id = 2;
+
+-- ✅ AVEC transaction : tout ou rien
+BEGIN;
+    UPDATE comptes SET solde = solde - 100 WHERE id = 1;
+    UPDATE comptes SET solde = solde + 100 WHERE id = 2;
+COMMIT;
+-- → si quoi que ce soit échoue avant COMMIT, l'ensemble est annulé automatiquement
+```
+
+### 🎯 Modes de transaction : DEFERRED, IMMEDIATE, EXCLUSIVE
+
+```sql
+-- DEFERRED (défaut) : aucun verrou tant qu'on ne fait que des lectures
+BEGIN DEFERRED;  
+SELECT * FROM clients;          -- pas encore de verrou  
+UPDATE clients SET actif = 0;   -- prend le verrou ICI seulement  
+COMMIT;  
+
+-- IMMEDIATE : prend tout de suite un verrou « réservé » (empêche d'autres writers)
+-- Recommandé quand vous SAVEZ que vous allez écrire — évite les deadlocks.
+BEGIN IMMEDIATE;  
+UPDATE clients SET actif = 0 WHERE id = 1;  
+COMMIT;  
+
+-- EXCLUSIVE : verrou exclusif d'emblée (bloque même les lectures)
+-- Rarement utile sauf migration de schéma.
+BEGIN EXCLUSIVE;  
+ALTER TABLE clients ADD COLUMN nouveau_champ TEXT;  
+COMMIT;  
+```
+
+> 💡 **Bonne pratique** : en mode WAL, utilisez `BEGIN IMMEDIATE` quand vous prévoyez d'écrire. Cela évite l'erreur `SQLITE_BUSY` qui survient quand SQLite essaye de passer du mode lecture au mode écriture alors qu'un autre processus écrit déjà.
+
+### 🔁 ROLLBACK et SAVEPOINT
+
+```sql
+-- ROLLBACK simple : tout annuler
+BEGIN;
+    INSERT INTO clients (nom, prenom) VALUES ('Erreur', 'Test');
+    -- Oups, mauvais choix
+ROLLBACK;  -- la ligne n'existe pas dans la base
+
+-- SAVEPOINT : points de restauration partielle dans une grosse transaction
+-- (rappel : la table `clients` exige nom + prenom NOT NULL, donc on fournit les deux)
+BEGIN;
+    INSERT INTO clients (nom, prenom) VALUES ('Test', 'Alice');
+
+    SAVEPOINT etape_2;
+    INSERT INTO clients (nom, prenom) VALUES ('Test', 'Bob');
+    INSERT INTO clients (nom, prenom) VALUES ('Test', 'Charlie');
+    -- Si on veut annuler uniquement Bob et Charlie :
+    ROLLBACK TO etape_2;
+
+    INSERT INTO clients (nom, prenom) VALUES ('Test', 'David');
+COMMIT;
+-- Résultat : Alice et David sont insérés, Bob et Charlie non.
+```
+
+### 🚀 Transactions et performance des INSERT massifs
+
+Sans transaction explicite, chaque `INSERT` est implicitement entouré d'un `BEGIN`/`COMMIT`, ce qui force une **synchronisation disque** à chaque ligne. Pour insérer beaucoup de données, **toujours grouper** :
+
+```sql
+-- ❌ LENT : ~1000 commits = ~1000 fsync (peut prendre plusieurs secondes)
+INSERT INTO logs (msg) VALUES ('msg 1');  
+INSERT INTO logs (msg) VALUES ('msg 2');  
+-- ... 1000 fois
+
+-- ✅ RAPIDE : 1 seul commit = 1 fsync
+BEGIN;  
+INSERT INTO logs (msg) VALUES ('msg 1');  
+INSERT INTO logs (msg) VALUES ('msg 2');  
+-- ... 1000 fois
+COMMIT;
+-- Gain de performance souvent ×50 à ×500 selon le disque !
+```
+
+## 📥 INSERT INTO ... SELECT — copier d'une table à l'autre
+
+```sql
+-- Copier des données d'une table à une autre (archivage, duplication, transformation)
+INSERT INTO clients_archives (nom, prenom, email, date_archivage)  
+SELECT nom, prenom, email, datetime('now')  
+FROM clients  
+WHERE actif = 0;  
+
+-- Avec transformation à la volée
+INSERT INTO produits_solde (nom, prix_original, prix_solde)  
+SELECT  
+    nom,
+    prix,
+    ROUND(prix * 0.7, 2)   -- -30%
+FROM produits  
+WHERE stock > 50;  
+
+-- Créer une table directement à partir d'une requête
+CREATE TABLE rapport_clients_inactifs AS  
+SELECT id, nom, prenom, date_inscription  
+FROM clients  
+WHERE actif = 0;  
+-- ⚠️ Limitation : CREATE TABLE AS ne copie PAS les contraintes (PK, FK, CHECK, UNIQUE)
+--    ni les index. C'est utile pour des snapshots, pas pour une vraie copie de schéma.
 ```
 
 ## 🎯 Exercice pratique complet - Gestion d'une bibliothèque
@@ -546,9 +694,9 @@ SELECT
     l.annee_publication,
     l.pages,
     CASE WHEN l.disponible = 1 THEN 'Disponible' ELSE 'Emprunté' END as statut
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id
-ORDER BY a.nom, l.titre;
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  
+ORDER BY a.nom, l.titre;  
 
 -- 5. Trouver les livres empruntes actuellement
 SELECT
@@ -560,9 +708,9 @@ SELECT
         WHEN date('now') > e.date_retour_prevue THEN 'En retard'
         ELSE 'Dans les temps'
     END as statut_retour
-FROM emprunts e
-JOIN livres l ON e.livre_id = l.id
-WHERE e.date_retour_reel IS NULL;
+FROM emprunts e  
+JOIN livres l ON e.livre_id = l.id  
+WHERE e.date_retour_reel IS NULL;  
 
 -- 6. Statistiques par auteur
 SELECT
@@ -570,39 +718,39 @@ SELECT
     COUNT(l.id) as nombre_livres,
     AVG(l.pages) as pages_moyennes,
     MIN(l.annee_publication) as premiere_publication
-FROM auteurs a
-LEFT JOIN livres l ON a.id = l.auteur_id
-GROUP BY a.id, a.nom, a.prenom
-ORDER BY nombre_livres DESC;
+FROM auteurs a  
+LEFT JOIN livres l ON a.id = l.auteur_id  
+GROUP BY a.id, a.nom, a.prenom  
+ORDER BY nombre_livres DESC;  
 
 -- === UPDATE : Modifier les données ===
 
 -- 7. Marquer un livre comme indisponible quand il est emprunté
-UPDATE livres
-SET disponible = 0
-WHERE id IN (SELECT livre_id FROM emprunts WHERE date_retour_reel IS NULL);
+UPDATE livres  
+SET disponible = 0  
+WHERE id IN (SELECT livre_id FROM emprunts WHERE date_retour_reel IS NULL);  
 
 -- 8. Corriger une erreur dans un titre
-UPDATE livres
-SET titre = 'Harry Potter à l''école des sorciers (Édition française)'
-WHERE isbn = '978-2-07-054100-0';
+UPDATE livres  
+SET titre = 'Harry Potter à l''école des sorciers (Édition française)'  
+WHERE isbn = '978-2-07-054100-0';  
 
 -- 9. Mettre à jour la date de retour réel
-UPDATE emprunts
-SET date_retour_reel = datetime('now')
-WHERE livre_id = 1 AND emprunteur = 'Marie Dubois';
+UPDATE emprunts  
+SET date_retour_reel = datetime('now')  
+WHERE livre_id = 1 AND emprunteur = 'Marie Dubois';  
 
 -- Remettre le livre disponible
-UPDATE livres
-SET disponible = 1
-WHERE id = 1;
+UPDATE livres  
+SET disponible = 1  
+WHERE id = 1;  
 
 -- === DELETE : Supprimer des données ===
 
 -- 10. Supprimer les emprunts terminés depuis plus de 1 an
-DELETE FROM emprunts
-WHERE date_retour_reel IS NOT NULL
-AND date_retour_reel < date('now', '-1 year');
+DELETE FROM emprunts  
+WHERE date_retour_reel IS NOT NULL  
+AND date_retour_reel < date('now', '-1 year');  
 
 -- 11. Supprimer un livre (attention aux contraintes)
 -- D'abord supprimer ses emprunts
@@ -613,13 +761,13 @@ DELETE FROM livres WHERE id = 4;
 -- === VÉRIFICATIONS FINALES ===
 
 -- Voir l'état final de la bibliothèque
-SELECT 'Auteurs' as table_name, COUNT(*) as nombre FROM auteurs
-UNION ALL
-SELECT 'Livres', COUNT(*) FROM livres
-UNION ALL
-SELECT 'Emprunts actifs', COUNT(*) FROM emprunts WHERE date_retour_reel IS NULL
-UNION ALL
-SELECT 'Livres disponibles', COUNT(*) FROM livres WHERE disponible = 1;
+SELECT 'Auteurs' as table_name, COUNT(*) as nombre FROM auteurs  
+UNION ALL  
+SELECT 'Livres', COUNT(*) FROM livres  
+UNION ALL  
+SELECT 'Emprunts actifs', COUNT(*) FROM emprunts WHERE date_retour_reel IS NULL  
+UNION ALL  
+SELECT 'Livres disponibles', COUNT(*) FROM livres WHERE disponible = 1;  
 
 -- Rapport final détaillé
 SELECT
@@ -627,10 +775,10 @@ SELECT
     a.nom as auteur,
     CASE WHEN l.disponible = 1 THEN '📚 Disponible' ELSE '📖 Emprunté' END as statut,
     COALESCE(e.emprunteur, 'Aucun') as emprunteur_actuel
-FROM livres l
-JOIN auteurs a ON l.auteur_id = a.id
-LEFT JOIN emprunts e ON l.id = e.livre_id AND e.date_retour_reel IS NULL
-ORDER BY l.titre;
+FROM livres l  
+JOIN auteurs a ON l.auteur_id = a.id  
+LEFT JOIN emprunts e ON l.id = e.livre_id AND e.date_retour_reel IS NULL  
+ORDER BY l.titre;  
 ```
 
 ## Récapitulatif des bonnes pratiques CRUD
@@ -639,8 +787,8 @@ ORDER BY l.titre;
 
 - **Spécifiez les colonnes** : `INSERT INTO table (col1, col2) VALUES (...)`
 - **Utilisez les insertions multiples** pour de meilleures performances
-- **Gérez les conflits** avec `INSERT OR IGNORE` / `INSERT OR REPLACE`
-- **Récupérez les IDs** avec `last_insert_rowid()`
+- **Gérez les conflits** avec `INSERT OR IGNORE`, `INSERT OR REPLACE`, ou **mieux** : `INSERT … ON CONFLICT DO UPDATE` (UPSERT)
+- **Récupérez les IDs** avec `RETURNING id` (≥ 3.35) ou `last_insert_rowid()` (à capturer aussitôt)
 
 ### ✅ READ (SELECT)
 
@@ -667,11 +815,11 @@ ORDER BY l.titre;
 
 ```sql
 -- ✅ Bonne pratique : transaction pour opérations liées
-BEGIN TRANSACTION;
-UPDATE clients SET actif = 0 WHERE id = 123;
-INSERT INTO clients_archives SELECT * FROM clients WHERE id = 123;
-DELETE FROM clients WHERE id = 123;
-COMMIT;
+BEGIN TRANSACTION;  
+UPDATE clients SET actif = 0 WHERE id = 123;  
+INSERT INTO clients_archives SELECT * FROM clients WHERE id = 123;  
+DELETE FROM clients WHERE id = 123;  
+COMMIT;  
 
 -- ✅ Test de cohérence
 SELECT COUNT(*) FROM clients WHERE actif NOT IN (0, 1);  -- Doit être 0
@@ -695,9 +843,9 @@ PRAGMA integrity_check;
 **💡 Dans le prochain chapitre**, nous explorerons les contraintes (PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK) qui garantissent l'intégrité et la cohérence de vos données.
 
 **🎯 Vous maîtrisez maintenant** :
-- Les quatre opérations fundamentales CRUD
-- Les techniques avancées d'insertion et de modification
+- Les quatre opérations fondamentales CRUD
+- Les techniques avancées d'insertion et de modification (`UPSERT` inclus)
 - Les bonnes pratiques de sécurité et de performance
 - La gestion des erreurs et des contraintes
 
-⏭️
+⏭️ [2.4 Contraintes : PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK](/02-bases-langage-sql-sqlite/04-contraintes-primary-key-foreign-key-unique-check.md)

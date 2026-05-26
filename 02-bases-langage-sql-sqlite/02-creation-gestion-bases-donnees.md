@@ -35,8 +35,8 @@ ls *.db
 sqlite3 bibliotheque.db
 
 # Dans SQLite, vérifier qu'on est bien connecté
-sqlite> .databases
-main: /chemin/vers/bibliotheque.db
+sqlite> .databases  
+main: /chemin/vers/bibliotheque.db  
 
 # Quitter sans rien faire
 sqlite> .quit
@@ -73,19 +73,21 @@ PRAGMA database_list;
 
 ```bash
 # ✅ Noms descriptifs et explicites
-sqlite3 gestion_bibliotheque.db
-sqlite3 comptabilite_2024.db
-sqlite3 inventaire_magasin.db
+sqlite3 gestion_bibliotheque.db  
+sqlite3 comptabilite_2024.db  
+sqlite3 inventaire_magasin.db  
 
 # ✅ Sans espaces ni caractères spéciaux
-sqlite3 analyse_donnees.db
-sqlite3 cache_application.db
+sqlite3 analyse_donnees.db  
+sqlite3 cache_application.db  
 
-# ❌ À éviter
-sqlite3 "ma base.db"          # Espaces problématiques
-sqlite3 données_été.db        # Caractères accentués
-sqlite3 base#1.db            # Caractères spéciaux
+# ⚠️ Possible mais déconseillé en pratique
+sqlite3 "ma base.db"          # Espaces : nécessitent des guillemets partout  
+sqlite3 données_été.db        # Accents : OK pour SQLite mais selon l'OS/shell, peut poser des soucis  
+sqlite3 base#1.db             # # ne pose pas vraiment de problème, mais peu lisible  
 ```
+
+> ℹ️ SQLite lui-même accepte n'importe quel nom de fichier valide pour l'OS, y compris UTF-8. Ce qui pose problème, ce sont les **outils** autour (scripts shell, Docker, Windows) qui gèrent mal espaces et accents. Restez sur `a-z`, `0-9`, `_`, `-` pour éviter toute surprise.
 
 ### 🗂️ Organisation par projet
 
@@ -118,15 +120,15 @@ SQLite stocke des informations sur lui-même que vous pouvez consulter :
 PRAGMA database_list;
 
 -- Configuration actuelle
-PRAGMA journal_mode;        -- Mode de journal (DELETE, WAL, etc.)
-PRAGMA synchronous;         -- Niveau de synchronisation
-PRAGMA page_size;           -- Taille des pages en bytes
-PRAGMA page_count;          -- Nombre de pages
-PRAGMA freelist_count;      -- Pages libres
+PRAGMA journal_mode;        -- Mode de journal (DELETE, WAL, etc.)  
+PRAGMA synchronous;         -- Niveau de synchronisation  
+PRAGMA page_size;           -- Taille des pages en bytes  
+PRAGMA page_count;          -- Nombre de pages  
+PRAGMA freelist_count;      -- Pages libres  
 
 -- Taille de la base
-SELECT page_count * page_size as taille_bytes
-FROM pragma_page_count(), pragma_page_size();
+SELECT page_count * page_size as taille_bytes  
+FROM pragma_page_count(), pragma_page_size();  
 ```
 
 ### 🔧 Configuration de base
@@ -134,20 +136,22 @@ FROM pragma_page_count(), pragma_page_size();
 **Optimisations recommandées pour une nouvelle base :**
 
 ```sql
--- Activer le mode WAL pour de meilleures performances
+-- Activer le mode WAL pour de meilleures performances (persistant sur le fichier)
 PRAGMA journal_mode = WAL;
 
--- Optimiser les performances
+-- synchronous = NORMAL : excellent compromis sécurité/perf avec WAL
 PRAGMA synchronous = NORMAL;
 
--- Définir un timeout pour les verrous
-PRAGMA busy_timeout = 30000;  -- 30 secondes
+-- Définir un timeout pour les verrous (5 s = standard recommandé)
+PRAGMA busy_timeout = 5000;
 
--- Vérifier la configuration
-PRAGMA journal_mode;
-PRAGMA synchronous;
-PRAGMA busy_timeout;
+-- Vérifier la configuration (par connexion, sauf journal_mode persistant)
+PRAGMA journal_mode;  
+PRAGMA synchronous;  
+PRAGMA busy_timeout;  
 ```
+
+> ⚠️ **Persistance des PRAGMA** : seuls **`journal_mode`** et **`schema_version`** sont écrits dans le fichier de base. Les autres PRAGMA (`synchronous`, `busy_timeout`, `foreign_keys`…) doivent être **réappliqués à chaque connexion**. Mettez-les dans votre code applicatif ou dans `~/.sqliterc` pour le shell.
 
 ## Création de structure - Tables et schémas
 
@@ -230,20 +234,31 @@ CREATE TABLE emprunts (
 );
 
 -- Ajouter une colonne à une table existante
-ALTER TABLE auteurs ADD COLUMN email TEXT;
-ALTER TABLE auteurs ADD COLUMN site_web TEXT;
+ALTER TABLE auteurs ADD COLUMN email TEXT;  
+ALTER TABLE auteurs ADD COLUMN site_web TEXT;  
 
 -- Renommer une colonne (SQLite 3.25+)
 ALTER TABLE auteurs RENAME COLUMN date_creation TO created_at;
 
 -- Renommer une table
-ALTER TABLE auteurs RENAME TO authors;
-ALTER TABLE authors RENAME TO auteurs;  -- On remet le nom original
+ALTER TABLE auteurs RENAME TO authors;  
+ALTER TABLE authors RENAME TO auteurs;  -- On remet le nom original  
 ```
 
 ### 🔧 Modifications complexes
 
-SQLite ne permet pas toutes les modifications. Pour des changements complexes :
+**✨ Approche moderne — depuis SQLite 3.35 (mars 2021) : `ALTER TABLE ... DROP COLUMN`**
+
+```sql
+-- Suppression directe d'une colonne (préférée si version SQLite ≥ 3.35)
+ALTER TABLE auteurs DROP COLUMN email;  
+ALTER TABLE auteurs DROP COLUMN site_web;  
+```
+
+> ⚠️ `DROP COLUMN` échoue si la colonne est référencée par un index, une FK, un trigger ou une vue.  
+> Dans ces cas-là, ou pour des changements plus profonds (renommer plusieurs colonnes, changer une contrainte, réordonner), il faut recourir à la **méthode complète** ci-dessous.
+
+**Méthode complète — fonctionne sur toutes les versions et tous les cas**
 
 ```sql
 -- Exemple : Supprimer une colonne (méthode complète)
@@ -260,8 +275,8 @@ CREATE TABLE auteurs_new (
 );
 
 -- 2. Copier les données
-INSERT INTO auteurs_new (id, nom, prenom, nationalite, date_naissance)
-SELECT id, nom, prenom, nationalite, date_naissance FROM auteurs;
+INSERT INTO auteurs_new (id, nom, prenom, nationalite, date_naissance)  
+SELECT id, nom, prenom, nationalite, date_naissance FROM auteurs;  
 
 -- 3. Supprimer l'ancienne table
 DROP TABLE auteurs;
@@ -277,15 +292,28 @@ COMMIT;
 ### 💾 Sauvegarde simple
 
 ```bash
-# Méthode 1 : Copie de fichier (base fermée)
+# Méthode 1 : Copie de fichier (uniquement quand la base est FERMÉE — sinon risque de corruption)
 cp bibliotheque.db backup_bibliotheque_$(date +%Y%m%d).db
 
-# Méthode 2 : Export SQL
+# Méthode 2 : Export SQL portable (.dump)
 sqlite3 bibliotheque.db .dump > backup_bibliotheque.sql
 
-# Méthode 3 : Backup API (base ouverte)
+# Méthode 3 : VACUUM INTO (depuis SQLite 3.27, 2019) — sûr même base ouverte
 sqlite3 bibliotheque.db "VACUUM INTO 'backup_clean.db'"
+
+# Méthode 4 : .backup du shell — équivalent à la « Backup API » côté C
+sqlite3 bibliotheque.db ".backup backup_atomic.db"
+
+# Méthode 5 : sqlite3_rsync (livré avec les sqlite-tools officiels) — incrémental
+# sqlite3_rsync bibliotheque.db backup_distant.db
 ```
+
+> 💡 Comparatif rapide :  
+> - **`cp`** : rapide mais UNIQUEMENT base fermée ; risque de corruption sinon  
+> - **`.dump`** : portable (script SQL texte), idéal pour archivage long terme et migration  
+> - **`VACUUM INTO`** : crée une copie compactée et défragmentée — recommandé pour les snapshots  
+> - **`.backup`** : copie atomique cohérente, fonctionne même pendant des écritures concurrentes  
+> - **`sqlite3_rsync`** : copie incrémentale, idéal pour réplication régulière vers un serveur distant
 
 ### 🔄 Restauration
 
@@ -297,8 +325,8 @@ cp backup_bibliotheque_20240115.db bibliotheque_restored.db
 sqlite3 nouvelle_bibliotheque.db < backup_bibliotheque.sql
 
 # Vérification de la restauration
-sqlite3 nouvelle_bibliotheque.db .tables
-sqlite3 nouvelle_bibliotheque.db "SELECT COUNT(*) FROM auteurs;"
+sqlite3 nouvelle_bibliotheque.db .tables  
+sqlite3 nouvelle_bibliotheque.db "SELECT COUNT(*) FROM auteurs;"  
 ```
 
 ## Gestion multi-bases
@@ -327,13 +355,15 @@ CREATE TABLE stats.visiteurs (
 );
 
 -- Copier des données entre bases
-INSERT INTO archive.anciens_livres
-SELECT * FROM main.livres WHERE date_publication < '2000-01-01';
+INSERT INTO archive.anciens_livres  
+SELECT * FROM main.livres WHERE date_publication < '2000-01-01';  
 
 -- Détacher les bases
-DETACH DATABASE stats;
-DETACH DATABASE archive;
+DETACH DATABASE stats;  
+DETACH DATABASE archive;  
 ```
+
+> ℹ️ **Limite ATTACH** : par défaut, SQLite n'autorise que **10 bases attachées simultanément** (`main` incluse). La limite dure est de 125 et se modifie à la compilation via `SQLITE_MAX_ATTACHED`. Pour un usage applicatif typique, on n'attache que 2-3 bases — au-delà, la conception est probablement à revoir.
 
 ### 📊 Exemple pratique multi-bases
 
@@ -344,15 +374,19 @@ sqlite3 production.db
 -- Attacher base de logs
 ATTACH DATABASE 'logs.db' AS logs;
 
--- Créer une vue combinée
-CREATE VIEW rapport_complet AS
-SELECT
+-- ⚠️ Une VIEW persistante (sans TEMP) NE PEUT PAS référencer une base attachée.
+--    SQLite refuse : « view X cannot reference objects in database logs ».
+--    Pourquoi ? Une vue persistante est stockée dans `main` (ou ailleurs) mais
+--    `logs` peut être absente à la prochaine ouverture → la vue serait cassée.
+-- ✅ Solution : utiliser CREATE TEMP VIEW (vue temporaire, valide pour la session).
+CREATE TEMP VIEW rapport_complet AS  
+SELECT  
     l.titre,
     l.auteur_id,
     COUNT(logs.acces.livre_id) as consultations
-FROM main.livres l
-LEFT JOIN logs.acces ON l.id = logs.acces.livre_id
-GROUP BY l.id;
+FROM main.livres l  
+LEFT JOIN logs.acces ON l.id = logs.acces.livre_id  
+GROUP BY l.id;  
 
 -- Utiliser la vue
 SELECT * FROM rapport_complet WHERE consultations > 10;
@@ -365,41 +399,64 @@ SELECT * FROM rapport_complet WHERE consultations > 10;
 ```sql
 -- Réorganiser et optimiser la base
 VACUUM;
+-- 💡 VACUUM reconstruit toute la base : peut prendre du temps sur une grosse base,
+--    et requiert un espace disque libre équivalent à la taille de la base.
 
 -- Analyser les statistiques pour l'optimiseur
 ANALYZE;
+-- 💡 ANALYZE remplit la table sqlite_stat1 : l'optimiseur de requêtes s'en sert
+--    pour choisir le bon index. À relancer après gros INSERTs ou DELETEs.
+
+-- ✨ ALTERNATIVE LÉGÈRE : PRAGMA optimize
+-- Disponible depuis SQLite 3.18 (2017), recommandé par la doc officielle.
+-- À appeler en fin de session : il décide automatiquement quoi analyser.
+PRAGMA optimize;
 
 -- Vérifier l'intégrité
-PRAGMA integrity_check;
+PRAGMA integrity_check;     -- Diagnostic complet (peut être lent sur grosse base)  
+PRAGMA quick_check;         -- Diagnostic rapide, moins exhaustif  
 
 -- Voir l'espace utilisé
-PRAGMA page_count;
-PRAGMA freelist_count;
+PRAGMA page_count;  
+PRAGMA freelist_count;  
 
--- Statistiques détaillées
+-- Statistiques détaillées (catalogue système)
+-- 💡 Depuis SQLite 3.33 (2020), la table système s'appelle sqlite_schema.
+--    L'ancien nom sqlite_master fonctionne encore par compatibilité, mais
+--    sqlite_schema est désormais à privilégier.
 SELECT
     name,
     tbl_name,
     type,
     sql
-FROM sqlite_master;
+FROM sqlite_schema  
+WHERE type IN ('table', 'view', 'index', 'trigger');  
 ```
+
+> 💡 **Routine de maintenance recommandée** :  
+> - **À chaque fin de session applicative** : `PRAGMA optimize;` (très léger)  
+> - **Hebdomadaire ou après gros changements** : `ANALYZE;`  
+> - **Mensuelle ou après grosse purge** : `VACUUM;` (peut bloquer la base, à planifier)  
+> - **Périodique** : `PRAGMA integrity_check;` pour détecter une éventuelle corruption
 
 ### ⚡ Optimisations courantes
 
 ```sql
 -- Configuration pour de meilleures performances
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA cache_size = 10000;
-PRAGMA temp_store = memory;
+PRAGMA journal_mode = WAL;       -- persistant  
+PRAGMA synchronous = NORMAL;     -- par connexion  
+PRAGMA cache_size = -20000;      -- valeur NÉGATIVE = Kio (ici 20 Mio en RAM)  
+                                 -- valeur positive = nombre de pages
+PRAGMA temp_store = MEMORY;      -- tables temporaires en RAM
 
--- Index automatiques (attention aux performances)
-PRAGMA automatic_index = ON;
+-- Index automatiques : activé par défaut (ne pas désactiver sauf raison spécifique)
+-- PRAGMA automatic_index = ON;   -- comportement par défaut, ligne inutile
 
--- Voir la configuration actuelle
+-- Voir la liste des options de compilation
 PRAGMA compile_options;
 ```
+
+> 💡 **`cache_size` négatif vs positif** : `-20000` = 20 480 Kio (≈ 20 Mio). `20000` = 20 000 pages × `page_size` (souvent 4096 octets = 78 Mio). Le format négatif est plus prévisible.
 
 ## Gestion des erreurs et récupération
 
@@ -421,17 +478,23 @@ PRAGMA quick_check;
 sqlite3 recovered.db < recovery.sql
 ```
 
-**Base verrouillée :**
+**Base verrouillée (« database is locked ») :**
+
+SQLite ne peut **pas forcer** la fermeture des connexions d'autres processus — seul le processus détenteur du verrou peut le libérer (via `COMMIT`/`ROLLBACK` ou en fermant la connexion).
+
 ```sql
--- Vérifier les connexions actives
+-- Voir les bases ouvertes par CETTE connexion seulement
 .databases
 
--- Forcer la fermeture des connexions
-PRAGMA busy_timeout = 0;
+-- Faire attendre la prochaine opération avant d'échouer (5 s recommandé)
+PRAGMA busy_timeout = 5000;
 
--- Redémarrer avec timeout plus long
-PRAGMA busy_timeout = 30000;
+-- Diagnostiquer : forcer un échec immédiat plutôt que d'attendre
+PRAGMA busy_timeout = 0;
+-- (utile pour reproduire un conflit, à remettre après diagnostic)
 ```
+
+> 💡 **Cas typiques de verrou** : une autre session `sqlite3` reste ouverte avec une transaction `BEGIN` sans `COMMIT`/`ROLLBACK`, ou un outil GUI (DB Browser, DBeaver) tient le fichier. **Solution** : fermer cette session/outil, ou ajouter `PRAGMA busy_timeout = 5000;` côté applicatif.
 
 ## 🎯 Exercice pratique complet
 
@@ -442,13 +505,15 @@ PRAGMA busy_timeout = 30000;
 sqlite3 gestion_projets.db
 
 -- 2. Configuration optimale
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA busy_timeout = 30000;
+PRAGMA journal_mode = WAL;       -- persistant : ne s'écrit qu'une fois dans le fichier  
+PRAGMA synchronous = NORMAL;     -- à réappliquer à chaque connexion  
+PRAGMA busy_timeout = 5000;      -- attendre 5 s avant d'échouer sur verrou  
+PRAGMA foreign_keys = ON;        -- ⚠️ obligatoire pour activer les FK !  
 
 -- 3. Créer la structure
+-- 💡 INTEGER PRIMARY KEY (sans AUTOINCREMENT) suffit : c'est un alias rapide du ROWID
 CREATE TABLE projets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY,
     nom TEXT NOT NULL UNIQUE,
     description TEXT,
     date_debut TEXT,
@@ -459,7 +524,7 @@ CREATE TABLE projets (
 );
 
 CREATE TABLE employes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY,
     nom TEXT NOT NULL,
     prenom TEXT NOT NULL,
     poste TEXT,
@@ -468,9 +533,9 @@ CREATE TABLE employes (
 );
 
 CREATE TABLE assignations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    projet_id INTEGER,
-    employe_id INTEGER,
+    id INTEGER PRIMARY KEY,
+    projet_id INTEGER NOT NULL,
+    employe_id INTEGER NOT NULL,
     role TEXT,
     date_assignation TEXT DEFAULT (datetime('now')),
     heures_prevues REAL,
@@ -505,9 +570,9 @@ INSERT INTO assignations (projet_id, employe_id, role, heures_prevues) VALUES
 .tables
 .schema
 
-SELECT COUNT(*) as nb_projets FROM projets;
-SELECT COUNT(*) as nb_employes FROM employes;
-SELECT COUNT(*) as nb_assignations FROM assignations;
+SELECT COUNT(*) as nb_projets FROM projets;  
+SELECT COUNT(*) as nb_employes FROM employes;  
+SELECT COUNT(*) as nb_assignations FROM assignations;  
 
 -- 6. Sauvegarde
 .backup backup_gestion_projets.db
@@ -519,10 +584,10 @@ SELECT
     a.role,
     a.heures_prevues,
     p.budget / (SELECT COUNT(*) FROM assignations WHERE projet_id = p.id) as budget_par_personne
-FROM projets p
-JOIN assignations a ON p.id = a.projet_id
-JOIN employes e ON a.employe_id = e.id
-ORDER BY p.nom, a.role;
+FROM projets p  
+JOIN assignations a ON p.id = a.projet_id  
+JOIN employes e ON a.employe_id = e.id  
+ORDER BY p.nom, a.role;  
 ```
 
 ## Récapitulatif des bonnes pratiques
@@ -537,11 +602,11 @@ ORDER BY p.nom, a.role;
 
 ### ❌ À éviter absolument
 
-1. **Modifications directes** du fichier .db en binaire
-2. **Partage réseau** du fichier de base
-3. **Noms avec espaces** ou caractères spéciaux
-4. **Modifications concurrentes** sans gestion des verrous
-5. **Bases trop volumineuses** sans maintenance
+1. **Modifications directes** du fichier `.db` avec un éditeur binaire ou hexa (corruption garantie)
+2. **Partage réseau** du fichier de base (NFS, SMB) — voir module 1.5 sur les verrous POSIX cassés
+3. **Noms de fichiers avec espaces** ou caractères accentués (problèmes dans scripts/CI)
+4. **Modifications concurrentes** sans `PRAGMA busy_timeout` ni mode WAL
+5. **Bases dépassant 100 Go sans réflexion** : penser à `VACUUM`, à l'archivage des vieilles données, voire à passer à PostgreSQL/ClickHouse si la charge analytique l'exige
 
 ### 🎯 Points clés à retenir
 
@@ -561,4 +626,4 @@ ORDER BY p.nom, a.role;
 - Les techniques de sauvegarde et restauration
 - L'organisation multi-bases et la maintenance
 
-⏭️
+⏭️ [2.3 Opérations CRUD : CREATE, READ, UPDATE, DELETE](/02-bases-langage-sql-sqlite/03-operations-crud-create-read-update-delete.md)
