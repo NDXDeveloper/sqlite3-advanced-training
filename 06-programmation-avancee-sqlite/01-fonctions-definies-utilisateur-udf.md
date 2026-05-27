@@ -15,9 +15,9 @@ Imaginez que vous gérez une base de données de clients et que vous devez régu
 SELECT nom, latitude, longitude FROM clients;
 
 -- Vous pourriez faire directement :
-SELECT nom, calculer_distance(latitude, longitude, 48.8566, 2.3522) as distance_paris
-FROM clients
-WHERE distance_paris < 50;
+SELECT nom, calculer_distance(latitude, longitude, 48.8566, 2.3522) as distance_paris  
+FROM clients  
+WHERE distance_paris < 50;  
 ```
 
 ## Types de fonctions UDF
@@ -41,7 +41,9 @@ Traitent un ensemble de lignes et retournent un résultat unique (comme SUM ou A
 - Effectuer des calculs statistiques avancés
 
 ### 3. Fonctions de fenêtrage
-Opèrent sur un ensemble de lignes liées à la ligne courante (utilisées avec OVER).
+Opèrent sur un ensemble de lignes liées à la ligne courante (utilisées avec `OVER (PARTITION BY ... ORDER BY ...)`).
+
+> ℹ️ **Disponibilité Python** : la création d'UDF de fenêtrage côté Python nécessite **Python 3.11+** (et SQLite 3.25+). Avant Python 3.11, seules les fonctions scalaires et d'agrégation sont disponibles via `create_function()` et `create_aggregate()`.
 
 ## Créer des UDF avec Python
 
@@ -50,8 +52,8 @@ Python est l'un des langages les plus accessibles pour débuter avec les UDF SQL
 ### Installation et configuration
 
 ```python
-import sqlite3
-import math
+import sqlite3  
+import math  
 
 # Connexion à la base de données
 conn = sqlite3.connect('ma_base.db')
@@ -69,14 +71,21 @@ def celsius_vers_fahrenheit(celsius):
     return (celsius * 9/5) + 32
 
 # Enregistrement de la fonction dans SQLite
-conn.create_function("c_vers_f", 1, celsius_vers_fahrenheit)
+# ✅ Bonne pratique : marquer comme déterministe quand c'est le cas
+#    (mêmes arguments → même résultat, sans effet de bord externe).
+conn.create_function("c_vers_f", 1, celsius_vers_fahrenheit, deterministic=True)
+# Pourquoi `deterministic=True` ? Les UDF non-déterministes ne peuvent PAS être utilisées dans :
+#   - les index sur expression (`CREATE INDEX ... ON t(c_vers_f(temp))`)
+#   - les colonnes générées (`GENERATED ALWAYS AS (c_vers_f(temp))`)
+#   - les contraintes CHECK
+# Sans ce flag, ces usages échouent avec "non-deterministic functions prohibited in ...".
 ```
 
 **Utilisation :**
 ```sql
 -- Dans une requête SQL
-SELECT ville, temperature_c, c_vers_f(temperature_c) as temperature_f
-FROM meteo;
+SELECT ville, temperature_c, c_vers_f(temperature_c) as temperature_f  
+FROM meteo;  
 ```
 
 ### Fonction avec plusieurs paramètres
@@ -115,9 +124,9 @@ conn.create_function("distance_gps", 4, distance_gps)
 -- Trouver tous les restaurants dans un rayon de 5km
 SELECT nom, adresse,
        distance_gps(restaurant_lat, restaurant_lon, 48.8566, 2.3522) as distance
-FROM restaurants
-WHERE distance < 5
-ORDER BY distance;
+FROM restaurants  
+WHERE distance < 5  
+ORDER BY distance;  
 ```
 
 ### Fonction de validation
@@ -145,14 +154,14 @@ conn.create_function("tel_valide", 1, valider_telephone_fr)
 **Utilisation :**
 ```sql
 -- Identifier les numéros de téléphone invalides
-SELECT nom, telephone
-FROM clients
-WHERE NOT tel_valide(telephone);
+SELECT nom, telephone  
+FROM clients  
+WHERE NOT tel_valide(telephone);  
 
 -- Compter les clients avec des numéros valides
-SELECT COUNT(*) as clients_tel_valide
-FROM clients
-WHERE tel_valide(telephone);
+SELECT COUNT(*) as clients_tel_valide  
+FROM clients  
+WHERE tel_valide(telephone);  
 ```
 
 ## Fonctions d'agrégation personnalisées
@@ -194,8 +203,8 @@ conn.create_aggregate("mediane", 1, MedianeAgregate)
 SELECT departement,
        AVG(salaire) as salaire_moyen,
        mediane(salaire) as salaire_median
-FROM employes
-GROUP BY departement;
+FROM employes  
+GROUP BY departement;  
 ```
 
 ## Gestion des erreurs dans les UDF
@@ -289,14 +298,14 @@ SELECT
         date_premiere_commande,
         date_derniere_commande
     ) as score
-FROM clients
-ORDER BY score DESC
-LIMIT 10;
+FROM clients  
+ORDER BY score DESC  
+LIMIT 10;  
 
 -- Identifier les clients à risque (score faible)
-SELECT COUNT(*) as clients_a_risque
-FROM clients
-WHERE score_fidelite(nb_commandes, montant_total, date_premiere_commande, date_derniere_commande) < 10;
+SELECT COUNT(*) as clients_a_risque  
+FROM clients  
+WHERE score_fidelite(nb_commandes, montant_total, date_premiere_commande, date_derniere_commande) < 10;  
 ```
 
 ## Optimisation et bonnes pratiques
@@ -358,10 +367,10 @@ def ma_fonction(param1, param2):
 Voici un exemple complet qui combine plusieurs concepts :
 
 ```python
-import sqlite3
-import math
-import re
-from datetime import datetime
+import sqlite3  
+import math  
+import re  
+from datetime import datetime  
 
 # Connexion à la base
 conn = sqlite3.connect('exemple.db')
@@ -391,7 +400,9 @@ def calculer_age(date_naissance):
             age -= 1
 
         return age
-    except:
+    except (ValueError, TypeError):
+        # ⚠️ Éviter `except:` (bare except) qui capture aussi KeyboardInterrupt
+        #    et SystemExit. Préciser les exceptions attendues.
         return None
 
 # 3. Fonction de catégorisation par âge
@@ -408,13 +419,13 @@ def categorie_age(age):
         return "Senior"
 
 # Enregistrement des fonctions
-conn.create_function("valider_email", 1, valider_email)
-conn.create_function("calculer_age", 1, calculer_age)
-conn.create_function("categorie_age", 1, categorie_age)
+conn.create_function("valider_email", 1, valider_email)  
+conn.create_function("calculer_age", 1, calculer_age)  
+conn.create_function("categorie_age", 1, categorie_age)  
 
 # Création d'une table d'exemple
-conn.execute('''
-CREATE TABLE IF NOT EXISTS utilisateurs (
+conn.execute('''  
+CREATE TABLE IF NOT EXISTS utilisateurs (  
     id INTEGER PRIMARY KEY,
     nom TEXT,
     email TEXT,
@@ -436,24 +447,24 @@ conn.executemany(
 )
 
 # Utilisation des fonctions dans une requête complète
-resultat = conn.execute('''
-SELECT
+resultat = conn.execute('''  
+SELECT  
     nom,
     email,
     CASE
-        WHEN valider_email(email) THEN "✓ Email valide"
-        ELSE "✗ Email invalide"
+        WHEN valider_email(email) THEN '✓ Email valide'
+        ELSE '✗ Email invalide'
     END as statut_email,
     date_naissance,
     calculer_age(date_naissance) as age,
     categorie_age(calculer_age(date_naissance)) as categorie
-FROM utilisateurs
-ORDER BY calculer_age(date_naissance)
+FROM utilisateurs  
+ORDER BY calculer_age(date_naissance)  
 ''')
 
-print("Rapport des utilisateurs :")
-print("-" * 80)
-for row in resultat:
+print("Rapport des utilisateurs :")  
+print("-" * 80)  
+for row in resultat:  
     print(f"{row[0]:15} | {row[1]:20} | {row[2]:15} | Age: {row[4]:2} | {row[5]}")
 
 conn.close()
@@ -488,4 +499,4 @@ conn.close()
 ### Prochaines étapes
 Dans la section suivante (6.2), nous verrons comment créer des **extensions SQLite** plus avancées, qui permettent d'ajouter non seulement des fonctions, mais aussi de nouveaux types de données et des fonctionnalités système complètes.
 
-⏭️
+⏭️ [6.2 Extensions SQLite et modules chargeables](/06-programmation-avancee-sqlite/02-extensions-sqlite-modules-chargeables.md)

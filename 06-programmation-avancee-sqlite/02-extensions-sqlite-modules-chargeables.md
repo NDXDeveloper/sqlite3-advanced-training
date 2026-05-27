@@ -22,9 +22,14 @@ Pensez à SQLite comme à un smartphone de base, et aux extensions comme aux app
 Ajoute un support complet pour les données JSON.
 
 ```sql
--- Disponible par défaut dans les versions récentes de SQLite
+-- Intégrée AU CŒUR de SQLite depuis la version 3.38 (février 2022).
+-- Sur les versions antérieures, il fallait charger l'extension JSON1.
 SELECT json_extract('{"nom": "Alice", "age": 30}', '$.nom') as nom;
 -- Résultat : Alice
+
+-- Opérateurs raccourcis (SQLite 3.38+) :
+SELECT '{"nom": "Alice"}' ->> '$.nom';   -- Alice (texte SQL)  
+SELECT '{"nom": "Alice"}' ->  '$.nom';   -- "Alice" (JSON valide)  
 ```
 
 ### 2. Extension FTS (Full-Text Search)
@@ -50,12 +55,24 @@ CREATE VIRTUAL TABLE spatial_index USING rtree(
 );
 ```
 
-### 4. Extension Math
-Ajoute des fonctions mathématiques avancées.
+### 4. Fonctions mathématiques
+Ajoutent des fonctions trigonométriques, logarithmiques, etc.
 
 ```sql
--- Fonctions trigonométriques, logarithmes, etc.
-SELECT sin(3.14159/2), log(10), sqrt(16);
+-- ℹ️ Intégrées AU CŒUR de SQLite depuis 3.35 (mars 2021), lorsque le binaire est
+--    compilé avec `-DSQLITE_ENABLE_MATH_FUNCTIONS`. C'est le cas des binaires
+--    distribués sur les paquets Linux récents et le shell `sqlite3` officiel.
+--    Plus besoin d'extension externe pour la plupart des installations.
+SELECT sin(3.14159/2), log(10), ln(10), sqrt(16), pi(), pow(2, 10);
+-- → 1.0, 1.0, 2.302585..., 4.0, 3.141592..., 1024.0
+-- ⚠️ ATTENTION : en SQLite `log(x)` est le logarithme en base 10 (équivalent `log10(x)`).
+--    Pour le logarithme NATUREL (base e), utiliser `ln(x)`. C'est l'inverse de Python
+--    où `math.log(x)` est le logarithme naturel.
+
+-- Vérifier la disponibilité sur votre binaire :
+SELECT count(*) FROM pragma_compile_options  
+WHERE compile_options = 'ENABLE_MATH_FUNCTIONS';  
+-- 1 = fonctions math disponibles, 0 = à recompiler ou charger via extension
 ```
 
 ## Comment charger une extension
@@ -79,8 +96,8 @@ sqlite3 ma_base.db
 import sqlite3
 
 # Activer le chargement d'extensions
-conn = sqlite3.connect('ma_base.db')
-conn.enable_load_extension(True)
+conn = sqlite3.connect('ma_base.db')  
+conn.enable_load_extension(True)  
 
 # Charger une extension
 conn.load_extension('./mon_extension.so')
@@ -93,8 +110,8 @@ conn.enable_load_extension(False)
 
 ```javascript
 // Node.js avec better-sqlite3
-const Database = require('better-sqlite3');
-const db = new Database('ma_base.db');
+const Database = require('better-sqlite3');  
+const db = new Database('ma_base.db');  
 
 // Charger une extension
 db.loadExtension('./mon_extension');
@@ -300,9 +317,9 @@ pip install apsw
 ### Création d'une extension Python
 
 ```python
-import apsw
-import re
-from datetime import datetime, timedelta
+import apsw  
+import re  
+from datetime import datetime, timedelta  
 
 class MonExtension:
     def __init__(self):
@@ -410,13 +427,16 @@ if __name__ == "__main__":
     )
 
     # Utiliser nos fonctions personnalisées
+    # ⚠️ En SQL standard, les chaînes utilisent des guillemets SIMPLES.
+    #    Les guillemets doubles sont pour les identifiants (noms de colonnes/tables).
+    #    SQLite tolère `"..."` comme chaîne pour rétrocompatibilité mais c'est non-standard.
     results = cursor.execute('''
         SELECT
             nom,
             iban,
             CASE
-                WHEN valider_iban(iban) THEN "✓ IBAN valide"
-                ELSE "✗ IBAN invalide"
+                WHEN valider_iban(iban) THEN '✓ IBAN valide'
+                ELSE '✗ IBAN invalide'
             END as statut_iban,
             formater_compte(numero_compte) as compte_formate,
             date_ouverture,
@@ -440,9 +460,9 @@ Les extensions peuvent également créer des **tables virtuelles**, qui permette
 ### Exemple conceptuel : Table virtuelle CSV
 
 ```python
-import apsw
-import csv
-import os
+import apsw  
+import csv  
+import os  
 
 class CSVVirtualTable:
     """Table virtuelle qui lit des fichiers CSV"""
@@ -522,8 +542,8 @@ Outil en ligne de commande avec de nombreuses extensions.
 pip install sqlite-utils
 
 # Utilisation avec extensions
-sqlite-utils insert ma_base.db table data.csv --csv
-sqlite-utils transform ma_base.db table --type colonne INTEGER
+sqlite-utils insert ma_base.db table data.csv --csv  
+sqlite-utils transform ma_base.db table --type colonne INTEGER  
 ```
 
 ### 2. Extension Spatialite
@@ -541,15 +561,30 @@ SELECT ST_Distance(
 Génération d'identifiants uniques.
 
 ```sql
--- Génère un UUID
-SELECT uuid() as nouvel_id;
+-- ⚠️ La fonction uuid() N'EST PAS native dans SQLite — il faut charger une
+--    extension externe (par exemple `sqlite-uuid` ou écrire une UDF maison).
+--    Solution simple sans extension : générer côté applicatif (Python uuid.uuid4()).
 
--- Utilisation dans une table
+-- Option 1 : extension externe (à compiler/charger)
+.load ./sqlite_uuid.so
+SELECT uuid() as nouvel_id;
+-- → "550e8400-e29b-41d4-a716-446655440000"
+
+-- Option 2 : UDF Python maison (sans extension externe)
+-- Côté Python :
+--   import uuid
+--   conn.create_function("uuid", 0, lambda: str(uuid.uuid4()), deterministic=False)
+
+-- Option 3 : valeur générée par défaut côté SQL pur (sans extension)
+--   Utiliser `randomblob(16)` (peu lisible, mais natif) :
 CREATE TABLE commandes (
-    id TEXT PRIMARY KEY DEFAULT (uuid()),
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     produit TEXT,
     quantite INTEGER
 );
+INSERT INTO commandes (produit, quantite) VALUES ('Widget', 5);  
+SELECT id FROM commandes;  
+-- → ex : "a3f2c89e1d4b7e6f9c2a1b8d5e3f7a92"  (hex aléatoire 32 chars)
 ```
 
 ## Bonnes pratiques pour les extensions
@@ -580,8 +615,8 @@ def fonction_dangereuse(chemin_fichier):
 ### 2. Gestion d'erreurs
 ```c
 // En C, toujours vérifier les allocations mémoire
-char *resultat = sqlite3_malloc(taille);
-if (!resultat) {
+char *resultat = sqlite3_malloc(taille);  
+if (!resultat) {  
     sqlite3_result_error_nomem(context);
     return;
 }
@@ -616,12 +651,12 @@ def fonction_lente(valeur):
 ### Techniques de débogage
 
 ```python
-import apsw
-import logging
+import apsw  
+import logging  
 
 # Configuration du logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)  
+logger = logging.getLogger(__name__)  
 
 def ma_fonction_debug(valeur):
     logger.debug(f"Entrée : {valeur}")
@@ -638,9 +673,9 @@ def ma_fonction_debug(valeur):
 ### Test des extensions
 
 ```python
-import unittest
-import tempfile
-import os
+import unittest  
+import tempfile  
+import os  
 
 class TestMonExtension(unittest.TestCase):
     def setUp(self):
@@ -680,10 +715,10 @@ if __name__ == '__main__':
 ### 1. Extensions C/C++
 ```bash
 # Créer un package
-mkdir mon_extension_package
-cp mon_extension.so mon_extension_package/
-cp README.md mon_extension_package/
-cp LICENSE mon_extension_package/
+mkdir mon_extension_package  
+cp mon_extension.so mon_extension_package/  
+cp README.md mon_extension_package/  
+cp LICENSE mon_extension_package/  
 
 # Archive
 tar -czf mon_extension.tar.gz mon_extension_package/
@@ -737,6 +772,6 @@ setup(
 - ❌ Logique qui change fréquemment
 
 ### Prochaines étapes
-Dans la section suivante (6.3), nous explorerons la **gestion avancée des transactions**, incluant les niveaux d'isolation, les points de sauvegarde, et les techniques de récupération d'erreur.
+Dans la section suivante (6.3), nous explorerons la **gestion avancée des transactions**, incluant les modes de verrouillage, les points de sauvegarde, et les techniques de récupération d'erreur.
 
-⏭️
+⏭️ [6.3 Gestion des transactions et niveaux d'isolation](/06-programmation-avancee-sqlite/03-gestion-transactions-niveaux-isolation.md)

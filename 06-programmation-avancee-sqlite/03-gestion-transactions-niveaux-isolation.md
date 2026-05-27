@@ -31,9 +31,9 @@ Les transactions respectent les propriétés **ACID** :
 BEGIN;
 
 -- Opérations de la transaction
-INSERT INTO comptes (nom, solde) VALUES ('Alice', 1000);
-UPDATE comptes SET solde = solde - 100 WHERE nom = 'Alice';
-UPDATE comptes SET solde = solde + 100 WHERE nom = 'Bob';
+INSERT INTO comptes (nom, solde) VALUES ('Alice', 1000);  
+UPDATE comptes SET solde = solde - 100 WHERE nom = 'Alice';  
+UPDATE comptes SET solde = solde + 100 WHERE nom = 'Bob';  
 
 -- Valider la transaction
 COMMIT;
@@ -44,8 +44,8 @@ COMMIT;
 ```sql
 BEGIN;
 
-INSERT INTO produits (nom, prix) VALUES ('Gadget', 29.99);
-UPDATE stock SET quantite = quantite - 1 WHERE produit_id = 1;
+INSERT INTO produits (nom, prix) VALUES ('Gadget', 29.99);  
+UPDATE stock SET quantite = quantite - 1 WHERE produit_id = 1;  
 
 -- Oups, erreur détectée - annuler tout
 ROLLBACK;
@@ -59,34 +59,38 @@ ROLLBACK;
 BEGIN;
 
 -- 1. Créer la commande
-INSERT INTO commandes (client_id, date_commande, total)
-VALUES (123, datetime('now'), 89.97);
+INSERT INTO commandes (client_id, date_commande, total)  
+VALUES (123, datetime('now'), 89.97);  
 
 -- Récupérer l'ID de la commande
 -- (En pratique, vous utiliseriez last_insert_rowid())
 
 -- 2. Ajouter les articles
-INSERT INTO lignes_commande (commande_id, produit_id, quantite, prix_unitaire)
-VALUES (1001, 15, 2, 29.99);
+INSERT INTO lignes_commande (commande_id, produit_id, quantite, prix_unitaire)  
+VALUES (1001, 15, 2, 29.99);  
 
-INSERT INTO lignes_commande (commande_id, produit_id, quantite, prix_unitaire)
-VALUES (1001, 22, 1, 29.99);
+INSERT INTO lignes_commande (commande_id, produit_id, quantite, prix_unitaire)  
+VALUES (1001, 22, 1, 29.99);  
 
 -- 3. Mettre à jour le stock
-UPDATE produits SET stock = stock - 2 WHERE id = 15;
-UPDATE produits SET stock = stock - 1 WHERE id = 22;
+UPDATE produits SET stock = stock - 2 WHERE id = 15;  
+UPDATE produits SET stock = stock - 1 WHERE id = 22;  
 
 -- 4. Enregistrer le paiement
-INSERT INTO paiements (commande_id, montant, statut)
-VALUES (1001, 89.97, 'validé');
+INSERT INTO paiements (commande_id, montant, statut)  
+VALUES (1001, 89.97, 'validé');  
 
 -- Tout s'est bien passé, valider
 COMMIT;
 ```
 
-## Niveaux d'isolation des transactions
+## Modes de transaction (DEFERRED, IMMEDIATE, EXCLUSIVE)
 
-SQLite propose trois niveaux d'isolation, qui contrôlent comment les transactions interagissent entre elles :
+> ⚠️ **Précision importante sur la terminologie** : DEFERRED, IMMEDIATE et EXCLUSIVE sont des **modes d'acquisition de verrous**, **pas des niveaux d'isolation au sens ACID**. SQLite ne propose qu'**un seul niveau d'isolation** : **SERIALIZABLE** (le plus strict). Les trois modes diffèrent uniquement par **le moment où SQLite acquiert les verrous**, pas par la visibilité des données concurrentes.  
+>  
+> Le seul autre niveau d'isolation existant (`READ UNCOMMITTED`, via `PRAGMA read_uncommitted = ON`) ne fonctionne qu'en mode **shared cache** — cas marginal et officiellement déconseillé.
+
+Les trois modes de transaction ci-dessous contrôlent **quand** les verrous sont acquis :
 
 ### 1. DEFERRED (Par défaut)
 
@@ -98,9 +102,9 @@ BEGIN;
 -- ou explicitement :
 BEGIN DEFERRED;
 
-SELECT * FROM comptes;  -- Pas de verrou
-UPDATE comptes SET solde = 500 WHERE id = 1;  -- Verrou acquis ici
-COMMIT;
+SELECT * FROM comptes;  -- Pas de verrou  
+UPDATE comptes SET solde = 500 WHERE id = 1;  -- Verrou acquis ici  
+COMMIT;  
 ```
 
 **Avantages :**
@@ -121,8 +125,8 @@ La transaction acquiert immédiatement un verrou d'écriture (mais permet encore
 BEGIN IMMEDIATE;
 
 -- Verrou d'écriture déjà acquis
-SELECT * FROM comptes;        -- OK, lecture autorisée
-UPDATE comptes SET solde = 500 WHERE id = 1;  -- OK, écriture protégée
+SELECT * FROM comptes;        -- OK, lecture autorisée  
+UPDATE comptes SET solde = 500 WHERE id = 1;  -- OK, écriture protégée  
 
 COMMIT;
 ```
@@ -138,41 +142,51 @@ COMMIT;
 
 ### 3. EXCLUSIVE
 
-La transaction acquiert un verrou exclusif total. Aucune autre transaction ne peut accéder à la base.
+La transaction acquiert un verrou exclusif **en mode rollback journal** (DELETE, TRUNCATE, PERSIST, MEMORY). En **mode WAL**, le comportement diffère : les **lecteurs concurrents restent autorisés**, seuls les autres writers sont bloqués.
 
 ```sql
--- Transaction exclusive
+-- Transaction exclusive (mode rollback journal)
 BEGIN EXCLUSIVE;
 
--- Accès exclusif total à la base de données
-SELECT * FROM comptes;
-UPDATE comptes SET solde = 500 WHERE id = 1;
-DELETE FROM commandes WHERE date_commande < '2020-01-01';
+-- Accès exclusif total à la base de données (mode rollback)
+SELECT * FROM comptes;  
+UPDATE comptes SET solde = 500 WHERE id = 1;  
+DELETE FROM commandes WHERE date_commande < '2020-01-01';  
 
 COMMIT;
 ```
 
+> ⚠️ **EXCLUSIVE en mode WAL** : depuis SQLite 3.7 (WAL), `BEGIN EXCLUSIVE` **n'empêche PAS les lecteurs concurrents** — il bloque seulement les autres writers. Pour vraiment exclure les lecteurs en mode WAL, il faut passer temporairement en rollback (`PRAGMA journal_mode = DELETE;`). C'est rarement nécessaire — un `BEGIN IMMEDIATE` suffit dans 99 % des cas en WAL.
+
 **Avantages :**
-- ✅ Aucun conflit possible
+- ✅ Aucun conflit d'écriture possible
 - ✅ Performance maximale pour les opérations lourdes
-- ✅ Bon pour les migrations ou maintenance
+- ✅ Bon pour les migrations ou maintenance (en mode rollback)
 
 **Inconvénients :**
-- ❌ Bloque complètement les autres accès
+- ❌ En rollback journal : bloque complètement les autres accès
 - ❌ Peut créer des goulots d'étranglement
+- ❌ En WAL, `EXCLUSIVE` n'est PAS plus restrictif que `IMMEDIATE` pour les lecteurs
 
-## Démonstration pratique des niveaux d'isolation
+## Démonstration pratique des modes de transaction
 
 Créons un exemple concret pour comprendre les différences :
 
+> ⚠️ **Piège du module `sqlite3` Python** : par défaut, le module gère les transactions de façon implicite (mode "legacy"). Pour utiliser explicitement `BEGIN DEFERRED/IMMEDIATE/EXCLUSIVE`, il faut **désactiver l'autogestion** :  
+> - **Python ≥ 3.12** : `sqlite3.connect(..., autocommit=True)` puis émettre `BEGIN` manuellement.  
+> - **Python ≤ 3.11** : `conn.isolation_level = None` après `connect()` (mode autocommit), puis émettre `BEGIN` manuellement.  
+>  
+> Sans ces réglages, un `conn.execute("BEGIN IMMEDIATE")` peut entrer en conflit avec la gestion automatique du module — le `commit()` Python est alors nécessaire/ambigu.
+
 ```python
-import sqlite3
-import threading
-import time
+import sqlite3  
+import threading  
+import time  
 
 # Création d'une base de test
 def creer_base_test():
     conn = sqlite3.connect('test_transactions.db')
+    conn.isolation_level = None   # ← Désactive l'autogestion : BEGIN/COMMIT manuels
     conn.execute('''
         CREATE TABLE IF NOT EXISTS compteur (
             id INTEGER PRIMARY KEY,
@@ -186,6 +200,7 @@ def creer_base_test():
 def transaction_deferred(nom):
     """Simulation d'une transaction DEFERRED"""
     conn = sqlite3.connect('test_transactions.db')
+    conn.isolation_level = None   # ← indispensable pour `BEGIN ...` manuel
     try:
         conn.execute("BEGIN DEFERRED")
         print(f"{nom}: Transaction DEFERRED démarrée")
@@ -215,6 +230,7 @@ def transaction_deferred(nom):
 def transaction_immediate(nom):
     """Simulation d'une transaction IMMEDIATE"""
     conn = sqlite3.connect('test_transactions.db')
+    conn.isolation_level = None   # ← indispensable pour `BEGIN ...` manuel
     try:
         conn.execute("BEGIN IMMEDIATE")
         print(f"{nom}: Transaction IMMEDIATE démarrée (verrou d'écriture acquis)")
@@ -281,8 +297,8 @@ INSERT INTO clients (nom) VALUES ('Alice');
 SAVEPOINT etape1;
 
 -- Opération 2
-INSERT INTO clients (nom) VALUES ('Bob');
-UPDATE clients SET email = 'bob@email.com' WHERE nom = 'Bob';
+INSERT INTO clients (nom) VALUES ('Bob');  
+UPDATE clients SET email = 'bob@email.com' WHERE nom = 'Bob';  
 
 -- Problème détecté, revenir au point de sauvegarde
 ROLLBACK TO etape1;
@@ -304,8 +320,8 @@ BEGIN;
 SAVEPOINT debut_import;
 
 -- Import du premier lot
-INSERT INTO produits (nom, prix) VALUES ('Produit A', 10.99);
-INSERT INTO produits (nom, prix) VALUES ('Produit B', 15.50);
+INSERT INTO produits (nom, prix) VALUES ('Produit A', 10.99);  
+INSERT INTO produits (nom, prix) VALUES ('Produit B', 15.50);  
 
 SAVEPOINT lot1_ok;
 
@@ -330,8 +346,8 @@ COMMIT;
 ```sql
 BEGIN;
 
-INSERT INTO commandes (client_id) VALUES (1);
-SAVEPOINT commande_creee;
+INSERT INTO commandes (client_id) VALUES (1);  
+SAVEPOINT commande_creee;  
 
     INSERT INTO lignes_commande (produit_id, quantite) VALUES (101, 2);
     SAVEPOINT ligne1_ajoutee;
@@ -366,9 +382,9 @@ conn.execute("PRAGMA busy_timeout = 30000")  # 30 secondes en millisecondes
 ### Gestion robuste des erreurs
 
 ```python
-import sqlite3
-import time
-import random
+import sqlite3  
+import time  
+import random  
 
 def transaction_robuste():
     """Transaction avec gestion d'erreurs et retry"""
@@ -379,6 +395,7 @@ def transaction_robuste():
         conn = None
         try:
             conn = sqlite3.connect('ma_base.db', timeout=10.0)
+            conn.isolation_level = None   # ← pour `BEGIN ...` manuel
 
             # Démarrer la transaction
             conn.execute("BEGIN IMMEDIATE")
@@ -403,15 +420,15 @@ def transaction_robuste():
             if conn:
                 try:
                     conn.execute("ROLLBACK")
-                except:
-                    pass
+                except sqlite3.Error:
+                    pass  # rollback peut échouer si transaction déjà close
 
         except Exception as e:
             print(f"Erreur générale (tentative {retry_count + 1}): {e}")
             if conn:
                 try:
                     conn.execute("ROLLBACK")
-                except:
+                except sqlite3.Error:
                     pass
 
         finally:
@@ -446,9 +463,9 @@ PRAGMA journal_mode;
 ### Avantages du mode WAL
 
 ```python
-import sqlite3
-import threading
-import time
+import sqlite3  
+import threading  
+import time  
 
 def lecteur_wal(nom):
     """Processus de lecture en mode WAL"""
@@ -554,10 +571,10 @@ def insert_optimise(donnees):
 
 ```sql
 -- Optimisations pour les transactions
-PRAGMA synchronous = NORMAL;  -- Balance sécurité/performance
-PRAGMA cache_size = 10000;    -- Cache plus important
-PRAGMA temp_store = MEMORY;   -- Stocker les temp en RAM
-PRAGMA journal_mode = WAL;    -- Mode WAL pour concurrence
+PRAGMA synchronous = NORMAL;  -- Balance sécurité/performance  
+PRAGMA cache_size = 10000;    -- Cache plus important  
+PRAGMA temp_store = MEMORY;   -- Stocker les temp en RAM  
+PRAGMA journal_mode = WAL;    -- Mode WAL pour concurrence  
 ```
 
 ## Patterns courants de transactions
@@ -615,15 +632,15 @@ COMMIT;
 BEGIN;
 
 -- Prendre le premier élément de la queue
-SELECT id, donnees FROM queue_traitement
-WHERE statut = 'en_attente'
-ORDER BY date_creation
-LIMIT 1;
+SELECT id, donnees FROM queue_traitement  
+WHERE statut = 'en_attente'  
+ORDER BY date_creation  
+LIMIT 1;  
 
 -- Marquer comme en cours de traitement
-UPDATE queue_traitement
-SET statut = 'en_cours', date_debut = datetime('now')
-WHERE id = ?;
+UPDATE queue_traitement  
+SET statut = 'en_cours', date_debut = datetime('now')  
+WHERE id = ?;  
 
 COMMIT;
 
@@ -631,11 +648,11 @@ COMMIT;
 -- ...
 
 -- Marquer comme terminé
-BEGIN;
-UPDATE queue_traitement
-SET statut = 'termine', date_fin = datetime('now')
-WHERE id = ?;
-COMMIT;
+BEGIN;  
+UPDATE queue_traitement  
+SET statut = 'termine', date_fin = datetime('now')  
+WHERE id = ?;  
+COMMIT;  
 ```
 
 ## Debugging et monitoring des transactions
@@ -643,11 +660,22 @@ COMMIT;
 ### Surveillance des verrous
 
 ```sql
--- Voir les informations sur les verrous (nécessite compilation spéciale)
-PRAGMA lock_status;
+-- ⚠️ `PRAGMA lock_status` N'EXISTE PAS dans le SQLite standard.
+--    SQLite n'expose pas l'état des verrous via une commande SQL en interne.
+--    Pour diagnostiquer les verrous, utiliser à la place :
 
--- Voir le mode de journal actuel
+-- Tester si la base accepte une transaction immédiate (= aucun writer actif)
+BEGIN IMMEDIATE;   -- échoue avec SQLITE_BUSY si un autre writer tient le verrou  
+ROLLBACK;  
+
+-- Voir le mode de journal actuel (rollback ou WAL)
 PRAGMA journal_mode;
+
+-- Diagnostic externe : sur le système hôte, `lsof mabase.db` (Linux/macOS)
+--   ou Process Explorer (Windows) liste les processus tenant le fichier.
+
+-- En mode WAL, inspecter le checkpoint :
+PRAGMA wal_checkpoint;  -- (busy, log, checkpointed)
 
 -- Statistiques sur la base
 PRAGMA database_list;
@@ -656,9 +684,9 @@ PRAGMA database_list;
 ### Logging des transactions longues
 
 ```python
-import sqlite3
-import time
-import logging
+import sqlite3  
+import time  
+import logging  
 
 class TransactionLogger:
     def __init__(self, db_path, seuil_seconde=5):
@@ -668,6 +696,7 @@ class TransactionLogger:
 
     def __enter__(self):
         self.conn = sqlite3.connect(self.db_path)
+        self.conn.isolation_level = None   # ← pour `BEGIN`/`COMMIT`/`ROLLBACK` manuels
         self.debut = time.time()
         self.conn.execute("BEGIN")
         return self.conn
@@ -700,9 +729,10 @@ with TransactionLogger('ma_base.db') as conn:
 def migrer_donnees_avec_rollback():
     """Migration avec possibilité de rollback complet"""
     conn = sqlite3.connect('ma_base.db')
+    conn.isolation_level = None   # ← pour `BEGIN ...` manuel
 
     try:
-        conn.execute("BEGIN EXCLUSIVE")  # Verrou total pour migration
+        conn.execute("BEGIN EXCLUSIVE")  # Verrou total pour migration (en mode rollback journal)
 
         # Étape 1: Sauvegarder les données existantes
         conn.execute("""
@@ -743,7 +773,8 @@ def migrer_donnees_avec_rollback():
             conn.execute("ROLLBACK TO backup_cree")
             conn.execute("DROP TABLE IF EXISTS backup_clients")
             conn.execute("ROLLBACK")
-        except:
+        except sqlite3.Error:
+            # Fallback : rollback global si savepoint inexistant
             conn.execute("ROLLBACK")
 
         print("Rollback terminé")
@@ -775,36 +806,45 @@ Quand une transaction pose problème :
 ### Patterns à éviter
 
 ```sql
--- ❌ Transactions imbriquées (SQLite ne les supporte pas vraiment)
+-- ❌ Transactions imbriquées : SQLite NE les supporte PAS
+--    Un second BEGIN dans une transaction lève une erreur :
+--    Runtime error: cannot start a transaction within a transaction
 BEGIN;
-  BEGIN;  -- Ignoré !
-  COMMIT; -- Commit de la transaction principale !
-COMMIT;   -- Erreur : pas de transaction active
+  BEGIN;  -- ❌ ERREUR (pas "ignoré silencieusement")
+COMMIT;
+
+-- ✅ Pour l'imbrication, utiliser SAVEPOINT (sous-transactions nommées) :
+BEGIN;
+  SAVEPOINT etape1;
+    -- opérations...
+  RELEASE etape1;    -- ou ROLLBACK TO etape1;
+COMMIT;
 
 -- ❌ Transactions trop longues
 BEGIN;
--- 1000 opérations complexes
+-- 1000 opérations complexes (bloque les autres writers pendant tout ce temps)
 COMMIT;
 
 -- ❌ Oublier la gestion d'erreurs
-BEGIN;
-UPDATE comptes SET solde = solde - 1000 WHERE id = 1;
--- Si erreur ici, la transaction reste ouverte !
+BEGIN;  
+UPDATE comptes SET solde = solde - 1000 WHERE id = 1;  
+-- Si erreur ici, la transaction reste ouverte → toujours `try/except/ROLLBACK`
 COMMIT;
 ```
 
 ### Ce que vous avez appris
 
-- ✅ **Concept des transactions** : Atomicité, cohérence, isolation, durabilité
-- ✅ **Niveaux d'isolation** : DEFERRED, IMMEDIATE, EXCLUSIVE
-- ✅ **Points de sauvegarde** : Rollback partiel avec SAVEPOINT
+- ✅ **Concept des transactions** : Atomicité, cohérence, isolation, durabilité (ACID)
+- ✅ **Modes de transaction** : DEFERRED, IMMEDIATE, EXCLUSIVE (pas des niveaux d'isolation au sens ACID — SQLite n'en a qu'un : SERIALIZABLE)
+- ✅ **Points de sauvegarde** : Rollback partiel avec SAVEPOINT (vraie imbrication)
 - ✅ **Gestion d'erreurs** : Timeout, retry, logging
-- ✅ **Mode WAL** : Amélioration de la concurrence
+- ✅ **Mode WAL** : Amélioration de la concurrence (1 writer + N readers)
 - ✅ **Optimisation** : Regroupement, configuration
 - ✅ **Patterns avancés** : Migration, audit, queue
+- ✅ **Piège Python** : nécessité de `conn.isolation_level = None` (ou `autocommit=True` en 3.12+) pour utiliser `BEGIN ...` manuellement
 
 ### Prochaines étapes
 
 Dans la section suivante (6.4), nous explorerons la **sauvegarde et restauration** avec l'API de backup de SQLite, incluant les stratégies de sauvegarde à chaud et la réplication de données.
 
-⏭️
+⏭️ [6.4 Sauvegarde et restauration (backup API)](/06-programmation-avancee-sqlite/04-sauvegarde-restauration-backup-api.md)

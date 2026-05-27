@@ -338,9 +338,16 @@ def configurer_synchronisation_automatique():
     # Utiliser la connexion de l'exemple précédent
     global conn
 
-    # Triggers pour maintenir la synchronisation automatique
+    # ⚠️ IMPORTANT : avec `content='articles'` (table externe), les triggers
+    #    DOIVENT utiliser le pattern spécifique FTS5 pour DELETE et UPDATE.
+    #    Un `UPDATE articles_fts SET ...` ou `DELETE FROM articles_fts` DIRECT
+    #    sur une table FTS5 contentless/external corrompt l'index
+    #    (`database disk image is malformed`). La doc SQLite recommande :
+    #
+    #    INSERT INTO articles_fts(articles_fts, rowid, ...) VALUES('delete', OLD.rowid, ...);
+    #    pour supprimer une entrée d'index avant de l'ajouter à nouveau.
 
-    # 1. Trigger INSERT
+    # 1. Trigger INSERT — pattern standard
     conn.execute("""
         CREATE TRIGGER articles_fts_insert AFTER INSERT ON articles
         BEGIN
@@ -349,21 +356,23 @@ def configurer_synchronisation_automatique():
         END
     """)
 
-    # 2. Trigger UPDATE
+    # 2. Trigger UPDATE — DELETE explicite puis INSERT
     conn.execute("""
         CREATE TRIGGER articles_fts_update AFTER UPDATE ON articles
         BEGIN
-            UPDATE articles_fts
-            SET titre = NEW.titre, contenu = NEW.contenu, auteur = NEW.auteur
-            WHERE rowid = NEW.id;
+            INSERT INTO articles_fts(articles_fts, rowid, titre, contenu, auteur)
+            VALUES('delete', OLD.id, OLD.titre, OLD.contenu, OLD.auteur);
+            INSERT INTO articles_fts(rowid, titre, contenu, auteur)
+            VALUES (NEW.id, NEW.titre, NEW.contenu, NEW.auteur);
         END
     """)
 
-    # 3. Trigger DELETE
+    # 3. Trigger DELETE — pattern 'delete' obligatoire en external content
     conn.execute("""
         CREATE TRIGGER articles_fts_delete AFTER DELETE ON articles
         BEGIN
-            DELETE FROM articles_fts WHERE rowid = OLD.id;
+            INSERT INTO articles_fts(articles_fts, rowid, titre, contenu, auteur)
+            VALUES('delete', OLD.id, OLD.titre, OLD.contenu, OLD.auteur);
         END
     """)
 
@@ -433,6 +442,19 @@ configurer_synchronisation_automatique()
 ## Fonctionnalités avancées
 
 ### Highlight et extraits
+
+> ℹ️ **`snippet()` vs `highlight()`** : FTS5 propose **deux fonctions complémentaires** :  
+> - **`snippet(table, col, prefix, suffix, ellipsis, nbTokens)`** : retourne un **extrait court** (snippet) — utile pour les résultats de recherche style Google. Le paramètre `nbTokens` limite la longueur (positif) ou prend toute la colonne (négatif comme `-1`).  
+> - **`highlight(table, col, prefix, suffix)`** : retourne le **contenu ENTIER** de la colonne avec les termes match entourés des balises. Pas de troncature, utile pour afficher un document entier annoté.  
+>
+> ```sql
+> -- Comparaison :
+> SELECT snippet(articles_fts, 1, '<b>', '</b>', '...', 10)   -- extrait court 10 tokens
+> FROM articles_fts WHERE articles_fts MATCH 'sqlite';
+>
+> SELECT highlight(articles_fts, 1, '<b>', '</b>')             -- contenu entier annoté
+> FROM articles_fts WHERE articles_fts MATCH 'sqlite';
+> ```
 
 ```python
 def demo_highlight_extraits():
@@ -799,25 +821,30 @@ def optimiser_performances_fts():
             titre,
             contenu,
             -- Paramètres d'optimisation
-            tokenize='porter ascii',  -- Tokenizer avec stemming
+            tokenize='porter ascii',  -- ⚠️ Stemming Porter EN ANGLAIS uniquement
             prefix='2 3 4',           -- Index de préfixes pour auto-complétion
             columnsize=0,             -- Désactiver le stockage de taille (plus rapide)
             detail=none               -- Désactiver les détails de position (plus rapide)
         )
     """)
 
-    print("   ✅ Table avec tokenizer Porter (stemming)")
+    print("   ✅ Table avec tokenizer Porter (stemming anglais)")
     print("   ✅ Index de préfixes pour auto-complétion rapide")
     print("   ✅ Paramètres optimisés pour la vitesse")
 
     # 2. Test du stemming (réduction des mots à leur racine)
-    print("\n2️⃣ Test du stemming")
+    print("\n2️⃣ Test du stemming Porter (EN ANGLAIS)")
 
-    # Insérer du contenu de test
+    # ⚠️ IMPORTANT : Porter est un algorithme de stemming pour la LANGUE ANGLAISE
+    #    Il ne fonctionne PAS bien sur le français. Vérification expérimentale :
+    #    `mange` ne trouvera PAS `mangent`, ni `boivent` → `boire`.
+    #    Pour le français : utiliser `unicode61` (pas de stemming) ou compiler SQLite
+    #    avec un tokenizer ICU/Snowball multilingue.
     documents_test = [
-        ("Programmation Python", "Ce document traite de la programmation en Python et des programmes."),
-        ("Développement web", "Le développement d'applications web nécessite de développer avec soin."),
-        ("Tests unitaires", "Les tests permettent de tester efficacement le code testé.")
+        # Documents en ANGLAIS — Porter fait du stemming utile ici
+        ("Programming guide", "This document covers programming and programs in depth."),
+        ("Web development", "Modern web development requires careful developing."),
+        ("Unit testing", "Tests allow you to test code efficiently when tested.")
     ]
 
     conn.executemany(
@@ -827,9 +854,9 @@ def optimiser_performances_fts():
 
     # Test des recherches avec stemming
     recherches_stemming = [
-        "programme",     # Devrait trouver "programmation", "programmes"
-        "développe",     # Devrait trouver "développement", "développer"
-        "test"           # Devrait trouver "tests", "tester", "testé"
+        "program",       # Trouve "programming", "programs" (suffixes -ing, -s)
+        "develop",       # Trouve "development", "developing", "developer"
+        "test"           # Trouve "tests", "testing", "tested"
     ]
 
     for terme in recherches_stemming:
@@ -1047,6 +1074,8 @@ def creer_moteur_recherche_blog():
     """)
 
     # Table FTS5 optimisée
+    # ⚠️ Contenu de blog en FRANÇAIS → utiliser `unicode61` (générique).
+    #    `porter` ne ferait pas de stemming utile pour le français.
     conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS articles_search USING fts5(
             titre,
@@ -1055,7 +1084,7 @@ def creer_moteur_recherche_blog():
             tags,
             content='articles',
             content_rowid='id',
-            tokenize='porter ascii',
+            tokenize='unicode61 remove_diacritics 2',
             prefix='2 3 4'
         )
     """)
@@ -1276,6 +1305,11 @@ def creer_moteur_recherche_blog():
         def statistiques_recherche(self, jours=30):
             """Statistiques des recherches des derniers jours"""
 
+            # ⚠️ NE PAS interpoler `jours` via `.format()` dans le SQL : risque
+            #    d'injection SQL si `jours` venait d'une entrée utilisateur.
+            #    On construit le modificateur de date côté Python puis on le
+            #    passe en paramètre lié.
+            modif_date = f'-{int(jours)} days'   # int() pour sécuriser
             cursor = self.conn.execute("""
                 SELECT
                     terme,
@@ -1283,11 +1317,11 @@ def creer_moteur_recherche_blog():
                     AVG(nb_resultats) as avg_resultats,
                     AVG(temps_reponse * 1000) as avg_temps_ms
                 FROM recherches_log
-                WHERE timestamp > datetime('now', '-{} days')
+                WHERE timestamp > datetime('now', ?)
                 GROUP BY terme
                 ORDER BY nb_recherches DESC
                 LIMIT 10
-            """.format(jours))
+            """, (modif_date,))
 
             return [dict(row) for row in cursor]
 
@@ -1455,9 +1489,9 @@ def creer_interface_web_recherche():
 
     # Code Flask simplifié pour démonstration
     flask_code = '''
-from flask import Flask, request, render_template_string
-import sqlite3
-import time
+from flask import Flask, request, render_template_string  
+import sqlite3  
+import time  
 
 app = Flask(__name__)
 
@@ -1677,6 +1711,7 @@ def demo_indexation_fichiers():
 
     import os
     import mimetypes
+    from datetime import datetime          # ← requis pour datetime.fromtimestamp() plus bas
     from pathlib import Path
 
     conn = sqlite3.connect('indexation_fichiers.db')
@@ -1976,6 +2011,10 @@ def benchmark_fts5():
         # Créer table FTS5
         conn.execute(sql_creation)
 
+        # Extraire le nom de la table FTS5 du SQL : `CREATE VIRTUAL TABLE <nom> USING fts5(...)`.
+        # Le nom est en position [3] dans le split par espaces.
+        table_name = sql_creation.split()[3]
+
         # Test d'insertion
         print("   📝 Test insertion...")
         nb_docs = 1000
@@ -1986,10 +2025,9 @@ def benchmark_fts5():
         if "content=" in sql_creation:
             # Insertion pour table externe
             conn.executemany("INSERT INTO docs_source (titre, contenu) VALUES (?, ?)", documents)
-            conn.execute("INSERT INTO docs_ext(docs_ext) VALUES('rebuild')")
+            conn.execute(f"INSERT INTO {table_name}({table_name}) VALUES('rebuild')")
         else:
             # Insertion directe
-            table_name = sql_creation.split()[5]  # Extraire nom de table
             conn.executemany(f"INSERT INTO {table_name} (titre, contenu) VALUES (?, ?)", documents)
 
         temps_insertion = time.time() - start_time
@@ -2001,8 +2039,6 @@ def benchmark_fts5():
 
         start_time = time.time()
         nb_recherches = 100
-
-        table_name = sql_creation.split()[5]  # Extraire nom de table
 
         for _ in range(nb_recherches):
             terme = random.choice(termes_recherche)
@@ -2149,15 +2185,33 @@ CREATE VIRTUAL TABLE articles_search USING fts5(
     titre, contenu,
     content='articles',
     content_rowid='id',
-    tokenize='porter ascii',
+    -- ⚠️ Tokenizer : choisir selon la langue principale.
+    --   `unicode61 remove_diacritics 2` : générique, multilingue, gère les accents (RECOMMANDÉ pour le français)
+    --   `porter ascii` : stemming spécifique à l'anglais (cherche "running" trouve "run")
+    tokenize='unicode61 remove_diacritics 2',
     prefix='2 3'
 );
 
--- 2. Triggers de synchronisation
-CREATE TRIGGER articles_insert AFTER INSERT ON articles
-BEGIN
+-- 2. Triggers de synchronisation (pattern OBLIGATOIRE pour external content)
+CREATE TRIGGER articles_insert AFTER INSERT ON articles  
+BEGIN  
     INSERT INTO articles_search(rowid, titre, contenu)
     VALUES (NEW.id, NEW.titre, NEW.contenu);
+END;
+
+CREATE TRIGGER articles_update AFTER UPDATE ON articles  
+BEGIN  
+    -- En external content : 'delete' explicite puis nouvel INSERT
+    INSERT INTO articles_search(articles_search, rowid, titre, contenu)
+    VALUES('delete', OLD.id, OLD.titre, OLD.contenu);
+    INSERT INTO articles_search(rowid, titre, contenu)
+    VALUES (NEW.id, NEW.titre, NEW.contenu);
+END;
+
+CREATE TRIGGER articles_delete AFTER DELETE ON articles  
+BEGIN  
+    INSERT INTO articles_search(articles_search, rowid, titre, contenu)
+    VALUES('delete', OLD.id, OLD.titre, OLD.contenu);
 END;
 
 -- 3. Recherche avec classement
@@ -2165,11 +2219,11 @@ SELECT
     a.titre,
     bm25(articles_search) as score,
     snippet(articles_search, 1, '<mark>', '</mark>', '...', 32) as extrait
-FROM articles_search s
-JOIN articles a ON a.id = s.rowid
-WHERE articles_search MATCH ?
-ORDER BY bm25(articles_search)
-LIMIT 10;
+FROM articles_search s  
+JOIN articles a ON a.id = s.rowid  
+WHERE articles_search MATCH ?  
+ORDER BY bm25(articles_search)  
+LIMIT 10;  
     '''
 
     print(template)
@@ -2188,373 +2242,6 @@ LIMIT 10;
         print(f"  {conseil}")
 
 conclusion_fts5()
-```
-
-## Récapitulatif final de la section 6
-
-```python
-def recapitulatif_section_6():
-    """Récapitulatif complet de la section 6 - Programmation avancée"""
-
-    print("🎊 RÉCAPITULATIF SECTION 6 - PROGRAMMATION AVANCÉE SQLITE")
-    print("=" * 70)
-
-    sections_completees = {
-        "6.1 Fonctions définies par l'utilisateur (UDF)": {
-            "description": "Création de fonctions SQL personnalisées",
-            "niveau": "🥇 Maîtrisé",
-            "competences": [
-                "Fonctions scalaires et d'agrégation",
-                "Intégration Python avec sqlite3",
-                "Gestion d'erreurs dans les UDF",
-                "Validation et logique métier"
-            ],
-            "cas_usage": "Calculs métier, validation, transformations"
-        },
-
-        "6.2 Extensions SQLite et modules chargeables": {
-            "description": "Modules avancés pour étendre SQLite",
-            "niveau": "🥇 Maîtrisé",
-            "competences": [
-                "Extensions C et Python",
-                "Tables virtuelles",
-                "Chargement dynamique",
-                "APIs natives SQLite"
-            ],
-            "cas_usage": "Intégration systèmes, fonctionnalités complexes"
-        },
-
-        "6.3 Gestion des transactions et niveaux d'isolation": {
-            "description": "Contrôle avancé des transactions",
-            "niveau": "🥇 Maîtrisé",
-            "competences": [
-                "DEFERRED, IMMEDIATE, EXCLUSIVE",
-                "Points de sauvegarde (SAVEPOINT)",
-                "Mode WAL et concurrence",
-                "Gestion d'erreurs transactionnelles"
-            ],
-            "cas_usage": "Applications critiques, haute concurrence"
-        },
-
-        "6.4 Sauvegarde et restauration (backup API)": {
-            "description": "Système de sauvegarde professionnel",
-            "niveau": "🥇 Maîtrisé",
-            "competences": [
-                "API de backup native",
-                "Rotation et compression",
-                "Monitoring et alertes",
-                "Récupération automatique"
-            ],
-            "cas_usage": "Production, continuité d'activité"
-        },
-
-        "6.5 Gestion des erreurs et exceptions": {
-            "description": "Robustesse et résilience",
-            "niveau": "🥇 Maîtrisé",
-            "competences": [
-                "Hiérarchie d'exceptions SQLite",
-                "Patterns de récupération",
-                "Circuit Breaker et fallback",
-                "Monitoring en temps réel"
-            ],
-            "cas_usage": "Applications robustes, expérience utilisateur"
-        },
-
-        "6.6 Recherche plein texte avec FTS5": {
-            "description": "Moteur de recherche avancé",
-            "niveau": "🥇 Maîtrisé",
-            "competences": [
-                "Configuration FTS5 optimisée",
-                "Recherche multilingue",
-                "Ranking et highlighting",
-                "Auto-complétion et suggestions"
-            ],
-            "cas_usage": "Moteurs de recherche, analyse de contenu"
-        }
-    }
-
-    print("\n📚 SECTIONS COMPLÉTÉES")
-    print("=" * 30)
-
-    for section, details in sections_completees.items():
-        print(f"\n🎯 {section}")
-        print(f"   📝 {details['description']}")
-        print(f"   🏆 Niveau: {details['niveau']}")
-        print(f"   💼 Cas d'usage: {details['cas_usage']}")
-        print(f"   🛠️ Compétences clés:")
-        for comp in details['competences']:
-            print(f"      • {comp}")
-
-    # Synthèse des capacités acquises
-    print(f"\n🌟 CAPACITÉS GLOBALES ACQUISES")
-    print("=" * 40)
-
-    capacites_globales = [
-        "🏗️ Architecturer des applications SQLite robustes et performantes",
-        "⚡ Optimiser les performances et gérer la montée en charge",
-        "🛡️ Implémenter une gestion d'erreurs de niveau professionnel",
-        "🔍 Créer des moteurs de recherche avancés",
-        "💾 Mettre en place des systèmes de sauvegarde automatisés",
-        "🔧 Étendre SQLite avec des fonctionnalités personnalisées",
-        "📊 Monitorer et diagnostiquer les problèmes en production",
-        "🌐 Intégrer SQLite dans des applications web modernes"
-    ]
-
-    for capacite in capacites_globales:
-        print(f"  {capacite}")
-
-    # Projets réalisables maintenant
-    print(f"\n🚀 PROJETS QUE VOUS POUVEZ MAINTENANT RÉALISER")
-    print("=" * 55)
-
-    projets_possibles = [
-        {
-            "nom": "🌐 Application web complète",
-            "description": "Site web avec recherche, authentification, et base de données",
-            "technologies": "SQLite + FTS5 + Flask/Django + UDF personnalisées"
-        },
-        {
-            "nom": "📱 Application mobile robuste",
-            "description": "App mobile avec synchronisation et mode hors-ligne",
-            "technologies": "SQLite + Transactions + Backup API + Gestion d'erreurs"
-        },
-        {
-            "nom": "📊 Système d'analyse de données",
-            "description": "ETL et analyse de gros volumes de données",
-            "technologies": "SQLite + UDF + Extensions + Optimisations"
-        },
-        {
-            "nom": "🔍 Moteur de recherche documentaire",
-            "description": "Indexation et recherche dans documents/fichiers",
-            "technologies": "FTS5 + Indexation + Interface web + APIs"
-        },
-        {
-            "nom": "🏢 Système d'entreprise",
-            "description": "Application métier avec haute disponibilité",
-            "technologies": "Toutes les compétences intégrées"
-        }
-    ]
-
-    for projet in projets_possibles:
-        print(f"\n{projet['nom']}")
-        print(f"   📝 {projet['description']}")
-        print(f"   🛠️ {projet['technologies']}")
-
-    # Évolution professionnelle
-    print(f"\n📈 ÉVOLUTION PROFESSIONNELLE")
-    print("=" * 35)
-
-    evolution = [
-        "🎓 Développeur SQLite expert",
-        "🏗️ Architecte de données",
-        "🔧 Spécialiste optimisation base de données",
-        "🌐 Lead développeur applications web",
-        "📊 Ingénieur Data/BI",
-        "🚀 CTO/Tech Lead"
-    ]
-
-    for etape in evolution:
-        print(f"  {etape}")
-
-recapitulatif_section_6()
-```
-
-## Feuille de route pour la suite
-
-```python
-def feuille_route_avancee():
-    """Feuille de route pour approfondir SQLite"""
-
-    print("🗺️ FEUILLE DE ROUTE - ALLER PLUS LOIN AVEC SQLITE")
-    print("=" * 60)
-
-    # Domaines d'approfondissement
-    domaines = {
-        "🔬 Recherche et développement": {
-            "objectif": "Contribuer à l'écosystème SQLite",
-            "actions": [
-                "Créer des extensions open source",
-                "Contribuer à SQLite ou ses wrappers",
-                "Publier des articles techniques",
-                "Donner des conférences/meetups",
-                "Créer des bibliothèques réutilisables"
-            ],
-            "timeline": "6-12 mois"
-        },
-
-        "🏢 Applications d'entreprise": {
-            "objectif": "Déployer SQLite en production",
-            "actions": [
-                "Migrer des systèmes existants",
-                "Implémenter la haute disponibilité",
-                "Créer des APIs robustes",
-                "Mettre en place le monitoring",
-                "Former les équipes"
-            ],
-            "timeline": "3-6 mois"
-        },
-
-        "📊 Big Data et Analytics": {
-            "objectif": "SQLite pour l'analyse de données",
-            "actions": [
-                "Intégrer avec Pandas/NumPy",
-                "Créer des UDF d'analyse",
-                "Optimiser pour gros volumes",
-                "Interfacer avec des outils BI",
-                "Développer des dashboards"
-            ],
-            "timeline": "2-4 mois"
-        },
-
-        "🌐 Technologies émergentes": {
-            "objectif": "SQLite et nouvelles technos",
-            "actions": [
-                "SQLite + WebAssembly",
-                "SQLite + Docker/Kubernetes",
-                "SQLite + Serverless",
-                "SQLite + IoT/Edge Computing",
-                "SQLite + Machine Learning"
-            ],
-            "timeline": "Continu"
-        }
-    }
-
-    for domaine, details in domaines.items():
-        print(f"\n{domaine}")
-        print(f"   🎯 Objectif: {details['objectif']}")
-        print(f"   ⏱️ Timeline: {details['timeline']}")
-        print(f"   📋 Actions:")
-        for action in details['actions']:
-            print(f"      • {action}")
-
-    # Ressources recommandées
-    print(f"\n📚 RESSOURCES POUR APPROFONDIR")
-    print("=" * 40)
-
-    ressources = {
-        "📖 Documentation officielle": [
-            "SQLite.org - Documentation complète",
-            "SQLite source code - Comprendre l'implémentation",
-            "SQLite mailing list - Discussions avancées"
-        ],
-
-        "🛠️ Outils et bibliothèques": [
-            "sqlite-utils - Utilitaires en ligne de commande",
-            "SQLiteStudio - Interface graphique avancée",
-            "DB Browser for SQLite - Outil visuel",
-            "sqlite3-to-mysql - Migration d'outils"
-        ],
-
-        "📺 Formations et contenus": [
-            "SQLite and Python course (Real Python)",
-            "Advanced SQLite (Pluralsight)",
-            "SQLite optimization techniques (YouTube)",
-            "Performance tuning guides (blogs)"
-        ],
-
-        "👥 Communautés": [
-            "Stack Overflow - Tag SQLite",
-            "Reddit r/SQLite",
-            "Discord/Slack dev communities",
-            "Meetups locaux base de données"
-        ]
-    }
-
-    for categorie, items in ressources.items():
-        print(f"\n{categorie}")
-        for item in items:
-            print(f"   • {item}")
-
-feuille_route_avancee()
-```
-
-## Certificat de compétences
-
-```python
-def generer_certificat():
-    """Génère un certificat de compétences SQLite"""
-
-    print("🏆 CERTIFICAT DE COMPÉTENCES SQLITE AVANCÉ")
-    print("=" * 55)
-
-    certificat = f"""
-
-    ╔═══════════════════════════════════════════════════════════════╗
-    ║                                                               ║
-    ║            🏆 CERTIFICAT DE COMPÉTENCES SQLITE 🏆              ║
-    ║                                                               ║
-    ║  Ce certificat atteste que le porteur a complété avec        ║
-    ║  succès la formation "SQLite du débutant au développeur      ║
-    ║  avancé" et maîtrise les compétences suivantes :             ║
-    ║                                                               ║
-    ║  ✅ Programmation avancée SQLite                              ║
-    ║  ✅ Fonctions définies par l'utilisateur (UDF)               ║
-    ║  ✅ Extensions et modules chargeables                         ║
-    ║  ✅ Gestion avancée des transactions                          ║
-    ║  ✅ Systèmes de sauvegarde professionnels                     ║
-    ║  ✅ Gestion d'erreurs et résilience                           ║
-    ║  ✅ Recherche plein texte avec FTS5                           ║
-    ║                                                               ║
-    ║  🎯 Niveau atteint : EXPERT SQLITE                            ║
-    ║                                                               ║
-    ║  Date : {datetime.now().strftime('%d/%m/%Y')}                                              ║
-    ║                                                               ║
-    ╚═══════════════════════════════════════════════════════════════╝
-
-    🌟 COMPÉTENCES VALIDÉES :
-
-    🔧 DÉVELOPPEMENT
-    • Création d'UDF en Python et C
-    • Architecture d'applications robustes
-    • Optimisation des performances
-    • Intégration avec frameworks web
-
-    🛡️ PRODUCTION
-    • Gestion d'erreurs professionnelle
-    • Systèmes de monitoring et alertes
-    • Sauvegarde et récupération automatisées
-    • Déploiement en environnement critique
-
-    🔍 FONCTIONNALITÉS AVANCÉES
-    • Moteurs de recherche avec FTS5
-    • Recherche multilingue et intelligent ranking
-    • Auto-complétion et suggestions
-    • Indexation de contenu complexe
-
-    🏗️ ARCHITECTURE
-    • Patterns de conception avancés
-    • Circuit Breaker et stratégies de fallback
-    • Tables virtuelles et extensions
-    • APIs REST robustes
-
-    """
-
-    print(certificat)
-
-    # Prochaines étapes recommandées
-    print("🚀 PROCHAINES ÉTAPES RECOMMANDÉES")
-    print("=" * 40)
-
-    etapes = [
-        "1. 💼 Appliquer ces compétences sur un projet réel",
-        "2. 🌐 Créer un portfolio avec des démos en ligne",
-        "3. 📝 Rédiger des articles sur vos réalisations",
-        "4. 👥 Partager vos connaissances avec la communauté",
-        "5. 🎯 Se spécialiser dans un domaine spécifique",
-        "6. 🏢 Proposer des améliorations dans votre entreprise"
-    ]
-
-    for etape in etapes:
-        print(f"   {etape}")
-
-    print(f"\n🎉 FÉLICITATIONS !")
-    print("Vous maîtrisez maintenant SQLite de niveau professionnel.")
-    print("Votre parcours d'apprentissage vous permettra de créer")
-    print("des applications robustes, performantes et évolutives.")
-    print("\n💡 Continuez à apprendre, expérimenter et partager !")
-
-from datetime import datetime
-generer_certificat()
 ```
 
 ## Guide de révision rapide
@@ -2620,41 +2307,44 @@ COMMIT;
         },
 
         "💾 Backup (6.4)": {
-            "concept_cle": "Sauvegarde professionnelle automatisée",
+            "concept_cle": "Sauvegarde cohérente avec l'API native SQLite",
             "code_exemple": """
-# Sauvegarde avec API native
-source = sqlite3.connect('source.db')
-backup = sqlite3.connect('backup.db')
+# Sauvegarde avec API native (sûre même si la base est ouverte)
+source = sqlite3.connect('source.db')  
+backup = sqlite3.connect('backup.db')  
 
-source.backup(backup, progress=callback)
-backup.close()
-source.close()
+source.backup(backup, progress=callback)  
+backup.close()  
+source.close()  
             """,
             "points_cles": [
-                "API backup native SQLite",
-                "Rotation et compression",
-                "Monitoring et alertes"
+                "API backup native SQLite (jamais `cp`)",
+                "Rotation et compression gzip",
+                "Litestream pour réplication continue"
             ]
         },
 
         "🛡️ Gestion erreurs (6.5)": {
-            "concept_cle": "Robustesse et résilience applications",
+            "concept_cle": "Hiérarchie d'exceptions + pattern Repository",
             "code_exemple": """
-# Pattern complet
+# Pattern recommandé
 try:
-    with sqlite3.connect(db) as conn:
-        conn.execute("BEGIN")
-        # opérations...
-        conn.execute("COMMIT")
-except sqlite3.IntegrityError:
-    # Gestion spécifique contraintes
-except sqlite3.OperationalError:
-    # Gestion verrous, tables manquantes
+    rows = conn.execute("INSERT INTO users (email) VALUES (?) RETURNING id", (email,)).fetchall()
+    conn.commit()
+    return rows[0][0]
+except sqlite3.IntegrityError as e:
+    conn.rollback()
+    if "UNIQUE constraint failed" in str(e):
+        raise ConflictError(f"Email '{email}' déjà utilisé") from e
+    raise
+except sqlite3.Error as e:
+    conn.rollback()
+    raise RepositoryError(f"Erreur DB : {e}") from e
             """,
             "points_cles": [
-                "Exceptions spécifiques SQLite",
-                "Circuit Breaker pattern",
-                "Monitoring temps réel"
+                "Hiérarchie : ordre spécifique → général dans except",
+                "Exceptions métier : ValidationError / NotFoundError / ConflictError",
+                "Retry avec backoff exponentiel (delay * 2**tentative)"
             ]
         },
 
@@ -2662,17 +2352,18 @@ except sqlite3.OperationalError:
             "concept_cle": "Recherche plein texte avancée",
             "code_exemple": """
 # Table FTS5 optimisée
+# tokenize : 'unicode61 remove_diacritics 2' (multilingue/FR) ou 'porter ascii' (EN avec stemming)
 CREATE VIRTUAL TABLE docs USING fts5(
     titre, contenu,
-    tokenize='porter ascii',
+    tokenize='unicode61 remove_diacritics 2',
     prefix='2 3'
 );
 
 # Recherche avec ranking
 SELECT *, bm25(docs) as score,
        snippet(docs, 1, '<b>', '</b>', '...', 32)
-FROM docs WHERE docs MATCH 'python OR javascript'
-ORDER BY bm25(docs);
+FROM docs WHERE docs MATCH 'python OR javascript'  
+ORDER BY bm25(docs);  
             """,
             "points_cles": [
                 "Configuration tokenizers",
@@ -2694,168 +2385,27 @@ ORDER BY bm25(docs);
 guide_revision()
 ```
 
-## Message final
-
-```python
-def message_final():
-    """Message final et encouragements"""
-
-    print("🎊 MESSAGE FINAL")
-    print("=" * 20)
-
-    message = """
-    🎉 BRAVO ! Vous avez terminé la formation SQLite complète !
-
-    De débutant complet à développeur SQLite avancé, vous avez parcouru
-    un chemin impressionnant. Vous maîtrisez maintenant :
-
-    📚 Les fondamentaux solides de SQLite
-    ⚡ L'optimisation des performances
-    🏗️ L'architecture d'applications robustes
-    🔍 Les fonctionnalités de recherche avancées
-    💾 Les systèmes de sauvegarde professionnels
-    🛡️ La gestion d'erreurs de niveau production
-
-    Vous n'êtes plus un simple utilisateur de SQLite, mais un véritable
-    expert capable de créer des applications de niveau professionnel.
-
-    🌟 CE QUI VOUS ATTEND :
-
-    • Des opportunités professionnelles enrichies
-    • La capacité de résoudre des problèmes complexes
-    • Une expertise technique reconnue
-    • Des projets plus ambitieux et impactants
-
-    🚀 VOTRE MISSION MAINTENANT :
-
-    1. Pratiquez sur des projets réels
-    2. Partagez vos connaissances
-    3. Continuez à apprendre et innover
-    4. Inspirez d'autres développeurs
-
-    L'apprentissage ne s'arrête jamais. Continuez à explorer,
-    expérimenter et repousser les limites de ce qui est possible
-    avec SQLite.
-
-    Bon développement et merci d'avoir suivi cette formation ! 🙏
-
-    ---
-
-    💌 N'hésitez pas à partager vos réussites et projets !
-    La communauté sera ravie de voir ce que vous créez avec
-    ces nouvelles compétences.
-
-    #SQLite #Database #WebDev #Python #FullStack
-    """
-
-    print(message)
-
-message_final()
-```
-
-## Ressources finales
-
-```python
-def ressources_finales():
-    """Compilation des ressources utiles pour la suite"""
-
-    print("📚 RESSOURCES FINALES")
-    print("=" * 25)
-
-    ressources = {
-        "🌐 Sites officiels": [
-            "https://sqlite.org/ - Documentation officielle",
-            "https://sqlite.org/lang.html - Référence SQL",
-            "https://sqlite.org/c3ref/intro.html - API C",
-            "https://sqlite.org/fts5.html - Documentation FTS5"
-        ],
-
-        "🐍 Python & SQLite": [
-            "https://docs.python.org/3/library/sqlite3.html - Module sqlite3",
-            "https://github.com/rogerbinns/apsw - APSW wrapper",
-            "https://pysqlite.readthedocs.io/ - pysqlite docs",
-            "https://sqlite-utils.datasette.io/ - sqlite-utils"
-        ],
-
-        "🛠️ Outils graphiques": [
-            "https://sqlitestudio.pl/ - SQLiteStudio",
-            "https://sqlitebrowser.org/ - DB Browser for SQLite",
-            "https://github.com/lana-k/sqliteviz - SQLiteViz",
-            "https://marketplace.visualstudio.com/items?itemName=alexcvzz.vscode-sqlite - VS Code extension"
-        ],
-
-        "📖 Livres recommandés": [
-            "The Definitive Guide to SQLite - Grant Allen",
-            "SQLite Development - Various authors",
-            "Database Design for Mere Mortals - Michael Hernandez",
-            "High Performance MySQL - Baron Schwartz"
-        ],
-
-        "🎥 Contenus vidéo": [
-            "SQLite Tutorial - freeCodeCamp (YouTube)",
-            "Advanced SQLite - PluralSight",
-            "Database Design Course - Coursera",
-            "SQLite Performance - Various YouTube channels"
-        ],
-
-        "👥 Communautés": [
-            "Stack Overflow - Tag 'sqlite'",
-            "Reddit - r/SQLite, r/Database",
-            "Discord - Programming communities",
-            "LinkedIn - SQLite groups"
-        ]
-    }
-
-    for categorie, liens in ressources.items():
-        print(f"\n{categorie}")
-        for lien in liens:
-            print(f"   • {lien}")
-
-    print(f"\n🔖 MARQUE-PAGES ESSENTIELS")
-    essentiels = [
-        "📊 SQLite Query Planner: https://sqlite.org/eqp.html",
-        "⚡ Performance Tips: https://sqlite.org/speed.html",
-        "🔧 PRAGMA statements: https://sqlite.org/pragma.html",
-        "📝 SQL Reference: https://sqlite.org/lang.html",
-        "🔍 FTS5 Guide: https://sqlite.org/fts5.html"
-    ]
-
-    for essentiel in essentiels:
-        print(f"   {essentiel}")
-
-ressources_finales()
-
-print("\n" + "="*60)
-print("🎯 FIN DE LA FORMATION SQLITE AVANCÉE")
-print("Merci d'avoir suivi ce parcours complet !")
-print("Bonne continuation dans vos projets SQLite ! 🚀")
-print("="*60)
-```
-
----
-
 ## Conclusion finale
 
-🎉 **Félicitations !** Vous avez terminé avec succès la section 6.6 sur la recherche plein texte avec FTS5, et par conséquent **l'intégralité de la formation SQLite** !
+🎉 **Félicitations !** Vous maîtrisez maintenant FTS5 et l'ensemble de la programmation avancée SQLite (chapitre 6).
 
-### Ce que vous maîtrisez maintenant :
+**Compétences acquises** :
+- ✅ UDF (scalaires, agrégats, fenêtrage Python 3.11+)
+- ✅ Extensions SQLite (chargement dynamique, écriture en C)
+- ✅ Transactions et modes de verrouillage (DEFERRED/IMMEDIATE/EXCLUSIVE)
+- ✅ Sauvegarde et restauration (Backup API)
+- ✅ Gestion d'erreurs robuste (hiérarchie, retry, pattern Repository)
+- ✅ Recherche plein texte FTS5 (bm25, snippet, tokenizers, optimisation)
 
-✅ **Recherche plein texte professionnelle** avec FTS5
-✅ **Optimisation avancée** des performances de recherche
-✅ **Indexation intelligente** de contenu et fichiers
-✅ **Interfaces de recherche** web complètes
-✅ **Recherche multilingue** et suggestions automatiques
+**Pour aller plus loin** :
+- 📖 [Documentation officielle SQLite](https://sqlite.org/docs.html)
+- 🔍 [FTS5 reference](https://sqlite.org/fts5.html)
+- 💾 [Backup API](https://sqlite.org/backup.html)
+- 🛠️ [sqlite-utils](https://sqlite-utils.datasette.io/) — outil Python avancé
+- ☁️ [Litestream](https://litestream.io/) — réplication continue vers S3/GCS/B2
 
-### Votre niveau final :
-
-🏆 **Expert SQLite** capable de créer des applications de production complètes avec :
-- Fonctionnalités avancées personnalisées
-- Gestion d'erreurs robuste
-- Systèmes de recherche intelligents
-- Architecture résiliente et performante
-
-Vous avez maintenant toutes les compétences pour créer des moteurs de recherche, des applications web robustes, et des systèmes de base de données de niveau professionnel avec SQLite.
+Vous avez maintenant toutes les compétences pour créer des moteurs de recherche, des applications web robustes, et des systèmes de base de données de niveau professionnel avec SQLite. Le chapitre suivant abordera l'**intégration de SQLite dans des applications** (Python sqlite3, C/Java/JS, ORM, APIs REST, synchronisation).
 
 **Continuez à pratiquer, innover et partager vos connaissances !** 🚀
 
-⏭️
+⏭️ [Module 7 : Intégration et APIs](/07-integration-apis/README.md)

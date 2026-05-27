@@ -24,8 +24,8 @@ Les UDF permettent d'ajouter vos propres fonctions SQL, écrites dans le langage
 
 ```sql
 -- Exemple d'utilisation d'une UDF personnalisée
-SELECT nom, calcul_distance_gps(lat1, lon1, lat2, lon2) as distance
-FROM trajets;
+SELECT nom, calcul_distance_gps(lat1, lon1, lat2, lon2) as distance  
+FROM trajets;  
 ```
 
 #### 2. Extensions et modules chargeables
@@ -59,10 +59,12 @@ Mécanisme puissant qui permet de créer des "tables" qui ne stockent pas réell
 
 Au niveau programmation avancée, la gestion transactionnelle devient cruciale :
 
-#### Niveaux d'isolation
-- **DEFERRED** : Transaction différée (par défaut)
-- **IMMEDIATE** : Verrouillage immédiat en écriture
-- **EXCLUSIVE** : Verrouillage exclusif complet
+#### Modes de transaction
+- **DEFERRED** : Transaction différée (par défaut) — verrous acquis au premier accès
+- **IMMEDIATE** : Verrou d'écriture acquis dès `BEGIN`
+- **EXCLUSIVE** : Verrou d'écriture + (en rollback journal seulement) blocage des lecteurs
+
+> ℹ️ Ces trois noms désignent des **modes d'acquisition de verrous**, pas des niveaux d'isolation au sens ACID. SQLite a un seul niveau d'isolation : **SERIALIZABLE**. Détails dans la section 6.3.
 
 #### Contrôle fin des transactions
 ```sql
@@ -98,10 +100,12 @@ Permet la sauvegarde à chaud de bases de données en cours d'utilisation, avec 
 SQLite intègre nativement un moteur de recherche plein texte sophistiqué :
 
 #### FTS5 - Fonctionnalités avancées
-- **Recherche floue** : Tolérance aux fautes de frappe
-- **Classement par pertinence** : Scoring automatique des résultats
-- **Highlight** : Mise en évidence des termes recherchés
-- **Requêtes complexes** : Opérateurs booléens, proximité, expressions
+- **Classement par pertinence** : Scoring automatique avec `bm25()`
+- **Highlight** : Mise en évidence des termes via `snippet()` et `highlight()`
+- **Requêtes complexes** : Opérateurs booléens (`AND`/`OR`/`NOT`), proximité (`NEAR`), recherche par phrase
+- **Préfixes & stemming** : Auto-complétion via `prefix='2 3 4'`, racinisation anglaise via le tokenizer `porter`
+
+> ℹ️ FTS5 ne fournit **pas nativement** de recherche floue/Levenshtein (tolérance aux fautes de frappe). Pour cela, il faut combiner FTS5 avec une extension externe (par exemple `spellfix1`) ou implémenter une logique applicative au-dessus.
 
 ```sql
 -- Création d'une table FTS5
@@ -113,11 +117,11 @@ CREATE VIRTUAL TABLE articles_fts USING fts5(
 );
 
 -- Recherche avec classement
-SELECT articles.*, rank
-FROM articles_fts
-JOIN articles ON articles.id = articles_fts.rowid
-WHERE articles_fts MATCH 'sqlite AND programmation'
-ORDER BY rank;
+SELECT articles.*, rank  
+FROM articles_fts  
+JOIN articles ON articles.id = articles_fts.rowid  
+WHERE articles_fts MATCH 'sqlite AND programmation'  
+ORDER BY rank;  
 ```
 
 ### Gestion d'erreurs et debugging
@@ -160,13 +164,16 @@ Pour aborder efficacement cette section, vous devriez maîtriser :
 
 ### Structure de la section
 
-Cette section se décompose en cinq parties complémentaires :
+Cette section se décompose en **six parties complémentaires** :
 
-1. **Fonctions définies par l'utilisateur** : Création de fonctions SQL personnalisées
-2. **Extensions et modules** : Développement et chargement d'extensions
-3. **Gestion transactionnelle** : Contrôle avancé des transactions
-4. **Sauvegarde et restauration** : APIs de backup et stratégies de récupération
-5. **Recherche plein texte** : Implémentation FTS5 pour des fonctionnalités de recherche avancées
+| # | Section | Sujet principal | Lien |
+|--:|---------|-----------------|------|
+| 6.1 | **Fonctions définies par l'utilisateur (UDF)** | Création de fonctions SQL personnalisées (scalaires, agrégats, fenêtrage) | [→ 6.1](/06-programmation-avancee-sqlite/01-fonctions-definies-utilisateur-udf.md) |
+| 6.2 | **Extensions et modules chargeables** | Développement et chargement d'extensions C/Python | [→ 6.2](/06-programmation-avancee-sqlite/02-extensions-sqlite-modules-chargeables.md) |
+| 6.3 | **Gestion des transactions** | Modes DEFERRED/IMMEDIATE/EXCLUSIVE, savepoints, mode WAL | [→ 6.3](/06-programmation-avancee-sqlite/03-gestion-transactions-niveaux-isolation.md) |
+| 6.4 | **Sauvegarde et restauration (backup API)** | API native, stratégies de sauvegarde et de récupération | [→ 6.4](/06-programmation-avancee-sqlite/04-sauvegarde-restauration-backup-api.md) |
+| 6.5 | **Gestion des erreurs et exceptions** | Hiérarchie d'exceptions, retry, fallback, monitoring | [→ 6.5](/06-programmation-avancee-sqlite/05-gestion-erreurs-exceptions.md) |
+| 6.6 | **Recherche plein texte avec FTS5** | Table virtuelle FTS5, bm25, snippet, tokenizers | [→ 6.6](/06-programmation-avancee-sqlite/06-recherche-plein-texte-avec-fts5.md) |
 
 Chaque sous-section combinera théorie, exemples pratiques et projets concrets pour vous permettre de maîtriser ces aspects avancés de SQLite.
 
@@ -174,4 +181,4 @@ Chaque sous-section combinera théorie, exemples pratiques et projets concrets p
 
 *Cette section vous donnera les clés pour transformer SQLite en un véritable outil de développement d'applications robustes et performantes.*
 
-⏭️
+⏭️ [6.1 Fonctions définies par l'utilisateur (UDF)](/06-programmation-avancee-sqlite/01-fonctions-definies-utilisateur-udf.md)
