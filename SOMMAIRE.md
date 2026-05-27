@@ -1,6 +1,6 @@
 # 📚 Formation SQLite3 — du débutant au développeur avancé
 
-> **9 modules · 47 sections · ~12 000 lignes** de cours (en français). Tous les exemples sont prêts à copier-coller et exécuter sur SQLite ≥ 3.38.
+> **9 modules · 47 sections · ~65 000 lignes** de cours (en français). Tous les exemples sont prêts à copier-coller et exécuter sur SQLite ≥ 3.38.
 
 ## Parcours d'apprentissage suggéré
 

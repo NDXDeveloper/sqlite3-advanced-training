@@ -1,6 +1,6 @@
 # SQLite3 Advanced Training 🗄️
 
-> **Formation SQLite3 — du débutant au développeur avancé.** 9 modules progressifs, plus de 60 000 lignes de cours, des centaines d'exemples SQL et Python prêts à exécuter, une fiche de révision condensée. Tout en français, sous licence MIT.
+> **Formation SQLite3 — du débutant au développeur avancé.** 9 modules · 47 sections · ~65 000 lignes de cours, des centaines d'exemples SQL et Python prêts à exécuter, une fiche de révision condensée. Tout en français, sous licence MIT.
 
 ---
 
