@@ -84,57 +84,40 @@ INSERT INTO donnees_test VALUES
 (5, 'good@test.org', '06.12.34.56.78', '13001', '978-0-123456-78-X');
 ```
 
-## Méthode 1 : Utilisation de REGEXP (si disponible)
+## Méthode 1 : `REGEXP` natif — encart de référence
 
-Si votre installation SQLite supporte REGEXP :
+> ⚠️ **À lire avant d'utiliser cette section** : `REGEXP` **n'est pas inclus** dans l'installation standard de SQLite. Les exemples ci-dessous **lèvent `no such function: REGEXP`** sur le shell `sqlite3` par défaut. Ils servent de **référence syntaxique** ; pour les exécuter, il faut soit recompiler SQLite avec une extension REGEXP, soit charger une UDF côté langage hôte (voir section « Alternatives en code » en fin de chapitre).
 
-### Syntaxe de base
+<details>
+<summary>📖 Exemples de référence avec REGEXP (à activer via UDF)</summary>
+
+**Syntaxe** : `SELECT * FROM table WHERE colonne REGEXP 'pattern';`
+
 ```sql
-SELECT * FROM table WHERE colonne REGEXP 'pattern';
+-- 1. Validation d'emails (pattern simplifié)
+SELECT nom, email  
+FROM clients  
+WHERE email REGEXP '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$';  
+
+-- 2. Recherche dans les titres
+SELECT titre FROM livres WHERE titre REGEXP '^[AEIOUaeiouÀÉÈÊËàéèêë]';  -- voyelle initiale  
+SELECT titre FROM livres WHERE titre REGEXP '\d';                       -- contient un chiffre  
+SELECT titre FROM livres WHERE titre REGEXP '\b\w{3}\b';                -- mot de 3 lettres exactement  
+
+-- 3. Validation de formats
+SELECT * FROM donnees_test WHERE code_postal REGEXP '^\d{5}$';                              -- code postal FR  
+SELECT * FROM donnees_test WHERE telephone REGEXP '^(\+33\s?|0)[1-9](\s?\d{2}){4}$';        -- téléphone FR  
+
+-- ⚠️ L'implémentation REGEXP de SQLite ne supporte pas `\d` à l'intérieur
+--    d'une classe de caractères `[…]` (erreur « unknown \ escape »).
+--    On écrit `[0-9X]` explicitement.
+SELECT * FROM donnees_test  
+WHERE isbn REGEXP '^[0-9]{1,5}-[0-9]{1,7}-[0-9]{1,7}-[0-9X]$';  
 ```
 
-### Exemples avec REGEXP
+</details>
 
-#### 1. Validation d'emails
-```sql
--- Emails valides (pattern simplifié)
-SELECT nom, email
-FROM clients
-WHERE email REGEXP '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$';
-```
-
-#### 2. Recherche dans les titres
-```sql
--- Livres commençant par une voyelle
-SELECT titre
-FROM livres
-WHERE titre REGEXP '^[AEIOUaeiouÀÉÈÊËàéèêë]';
-
--- Livres contenant des chiffres
-SELECT titre
-FROM livres
-WHERE titre REGEXP '\d';
-
--- Livres avec des mots de 3 lettres exactement
-SELECT titre
-FROM livres
-WHERE titre REGEXP '\b\w{3}\b';
-```
-
-#### 3. Validation de données
-```sql
--- Codes postaux français (5 chiffres)
-SELECT * FROM donnees_test
-WHERE code_postal REGEXP '^\d{5}$';
-
--- Numéros de téléphone français
-SELECT * FROM donnees_test
-WHERE telephone REGEXP '^(\+33\s?|0)[1-9](\s?\d{2}){4}$';
-
--- ISBN valides (format simplifié)
-SELECT * FROM donnees_test
-WHERE isbn REGEXP '^\d{1,5}-\d{1,7}-\d{1,7}-[\dX]$';
-```
+> 💡 **La vraie pratique SQLite** est exposée dans la **Méthode 2** ci-dessous (GLOB + fonctions natives). C'est ce qui marche sur n'importe quelle installation, sans dépendance externe.
 
 ## Méthode 2 : Simulation avec les fonctions SQLite natives
 
@@ -187,19 +170,19 @@ SELECT * FROM emails_valides WHERE statut_email = 'Valide';
 #### 1. Recherche de mots spécifiques
 ```sql
 -- Livres contenant "guide" (insensible à la casse)
-SELECT titre
-FROM livres
-WHERE UPPER(titre) LIKE '%GUIDE%';
+SELECT titre  
+FROM livres  
+WHERE UPPER(titre) LIKE '%GUIDE%';  
 
 -- Titres avec exactement 3 mots
-SELECT titre
-FROM livres
-WHERE (LENGTH(titre) - LENGTH(REPLACE(titre, ' ', ''))) = 2;  -- 2 espaces = 3 mots
+SELECT titre  
+FROM livres  
+WHERE (LENGTH(titre) - LENGTH(REPLACE(titre, ' ', ''))) = 2;  -- 2 espaces = 3 mots  
 
 -- Titres commençant par une voyelle
-SELECT titre
-FROM livres
-WHERE UPPER(SUBSTR(titre, 1, 1)) IN ('A', 'E', 'I', 'O', 'U', 'À', 'É', 'È', 'Ê', 'Ë');
+SELECT titre  
+FROM livres  
+WHERE UPPER(SUBSTR(titre, 1, 1)) IN ('A', 'E', 'I', 'O', 'U', 'À', 'É', 'È', 'Ê', 'Ë');  
 ```
 
 #### 2. Validation de formats
@@ -260,7 +243,11 @@ SELECT
     telephone,
     tel_chiffres,
     CASE
-        WHEN LENGTH(tel_chiffres) = 10 AND tel_chiffres GLOB '[0-9]*' THEN 'Valide'
+        -- ⚠️ Pour vérifier que TOUS les caractères sont des chiffres avec GLOB,
+        --    il faut utiliser `NOT GLOB '*[^0-9]*'` (ne contient PAS de non-chiffre).
+        --    `GLOB '[0-9]*'` matche seulement « commence par un chiffre puis n'importe quoi »
+        --    (ex : '0abc' satisferait la condition).
+        WHEN LENGTH(tel_chiffres) = 10 AND tel_chiffres NOT GLOB '*[^0-9]*' THEN 'Valide'
         ELSE 'Invalide'
     END as statut
 FROM tel_nettoyes;
@@ -319,8 +306,8 @@ SELECT
          AND statut_pays = 'Pays valide' THEN '✅ Données complètes'
         ELSE '⚠️ Données à corriger'
     END as evaluation_globale
-FROM audit_clients
-ORDER BY evaluation_globale, id;
+FROM audit_clients  
+ORDER BY evaluation_globale, id;  
 ```
 
 ### 2. Recherche intelligente de livres
@@ -366,8 +353,8 @@ SELECT
         WHEN nb_mots <= 4 THEN '📚 Titre moyen'
         ELSE '📜 Titre long'
     END as categorie_longueur
-FROM recherche_livres
-ORDER BY type_titre, nb_mots;
+FROM recherche_livres  
+ORDER BY type_titre, nb_mots;  
 ```
 
 ### 3. Analyse de patterns dans les données de vente
@@ -411,10 +398,10 @@ SELECT
     type_livre,
     COUNT(*) as nb_commandes,
     ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM commandes), 1) as pourcentage
-FROM patterns_commandes
-GROUP BY periode, type_domaine, type_livre
-HAVING nb_commandes > 0
-ORDER BY nb_commandes DESC;
+FROM patterns_commandes  
+GROUP BY periode, type_domaine, type_livre  
+HAVING nb_commandes > 0  
+ORDER BY nb_commandes DESC;  
 ```
 
 ## Fonctions utiles pour remplacer REGEXP
@@ -423,8 +410,8 @@ ORDER BY nb_commandes DESC;
 
 ```sql
 -- Créer une vue pour validation d'emails
-CREATE VIEW emails_analyses AS
-WITH validation_email AS (
+CREATE VIEW emails_analyses AS  
+WITH validation_email AS (  
     SELECT
         id,
         nom,
@@ -470,7 +457,10 @@ SELECT * FROM emails_analyses WHERE NOT email_valide;
 ### 2. Extraction de patterns
 
 ```sql
--- Extraire différentes parties d'informations
+-- ⚠️ SQLite n'a PAS de fonction `REVERSE` native (≠ MySQL/PostgreSQL).
+--    Pour extraire l'extension après le DERNIER point sans `REVERSE`, on utilise
+--    `rtrim` + `replace` pour calculer la position du dernier point différemment,
+--    ou on se limite à une liste d'extensions connues via une CASE.
 WITH extractions AS (
     SELECT
         email,
@@ -480,11 +470,15 @@ WITH extractions AS (
         -- Extraire le domaine (après @)
         SUBSTR(email, INSTR(email, '@') + 1) as domaine,
 
-        -- Extraire l'extension (après le dernier point)
-        SUBSTR(
-            email,
-            LENGTH(email) - INSTR(REVERSE(email), '.') + 2
-        ) as extension
+        -- Extraire l'extension via CASE sur les extensions connues
+        CASE
+            WHEN email LIKE '%.com'   THEN 'com'
+            WHEN email LIKE '%.fr'    THEN 'fr'
+            WHEN email LIKE '%.org'   THEN 'org'
+            WHEN email LIKE '%.co.uk' THEN 'co.uk'
+            WHEN email LIKE '%.net'   THEN 'net'
+            ELSE NULL
+        END AS extension
     FROM clients
     WHERE email LIKE '%@%'
 )
@@ -519,10 +513,10 @@ Trouvez tous les livres dont le titre commence par une voyelle en utilisant les 
 <summary>Solution</summary>
 
 ```sql
-SELECT titre
-FROM livres
-WHERE UPPER(SUBSTR(titre, 1, 1)) IN ('A', 'E', 'I', 'O', 'U', 'À', 'É', 'È', 'Ê', 'Ë')
-ORDER BY titre;
+SELECT titre  
+FROM livres  
+WHERE UPPER(SUBSTR(titre, 1, 1)) IN ('A', 'E', 'I', 'O', 'U', 'À', 'É', 'È', 'Ê', 'Ë')  
+ORDER BY titre;  
 ```
 </details>
 
@@ -550,8 +544,8 @@ SELECT
         WHEN LENGTH(email) - LENGTH(REPLACE(email, '@', '')) != 1 THEN 'Problème avec @'
         ELSE 'OK'
     END as erreur
-FROM donnees_test
-ORDER BY statut DESC;
+FROM donnees_test  
+ORDER BY statut DESC;  
 ```
 </details>
 
@@ -622,10 +616,12 @@ formatage_final AS (
         original,
         chiffres_seulement,
         -- Vérifier si on a exactement 10 chiffres commençant par 0
+        -- ⚠️ Pour « tous chiffres », on utilise `NOT GLOB '*[^0-9]*'`
+        --    (`GLOB '[0-9]*'` ne matche que le PREMIER caractère, le reste est libre).
         CASE
             WHEN LENGTH(chiffres_seulement) = 10
              AND SUBSTR(chiffres_seulement, 1, 1) = '0'
-             AND chiffres_seulement GLOB '[0-9]*'
+             AND chiffres_seulement NOT GLOB '*[^0-9]*'
             THEN SUBSTR(chiffres_seulement, 1, 2) || '.' ||
                  SUBSTR(chiffres_seulement, 3, 2) || '.' ||
                  SUBSTR(chiffres_seulement, 5, 2) || '.' ||
@@ -642,11 +638,11 @@ SELECT
         WHEN numero_formate IS NOT NULL THEN '✅ Formaté avec succès'
         WHEN LENGTH(chiffres_seulement) != 10 THEN '❌ Longueur incorrecte'
         WHEN SUBSTR(chiffres_seulement, 1, 1) != '0' THEN '❌ Ne commence pas par 0'
-        WHEN chiffres_seulement NOT GLOB '[0-9]*' THEN '❌ Contient des caractères non-numériques'
+        WHEN chiffres_seulement GLOB '*[^0-9]*' THEN '❌ Contient des caractères non-numériques'
         ELSE '❌ Format non reconnu'
     END as statut
-FROM formatage_final
-ORDER BY statut DESC;
+FROM formatage_final  
+ORDER BY statut DESC;  
 ```
 </details>
 
@@ -660,8 +656,8 @@ ORDER BY statut DESC;
 ### Alternatives en code
 ```python
 # En Python avec sqlite3
-import sqlite3
-import re
+import sqlite3  
+import re  
 
 conn = sqlite3.connect('database.db')
 
@@ -704,4 +700,4 @@ Même sans REGEXP natif, SQLite offre des outils puissants pour gérer les patte
 
 Dans la prochaine section, nous découvrirons les **requêtes complexes avec CASE, COALESCE et NULLIF** pour une logique conditionnelle encore plus sophistiquée.
 
-⏭️
+⏭️ [4.5 Requêtes complexes : CASE, COALESCE, NULLIF](/04-requetes-avancees-optimisation/05-requetes-complexes-case-coalesce-nullif.md)

@@ -16,9 +16,9 @@ Une **fonction de fenêtrage** effectue un calcul sur un ensemble de lignes lié
 
 ```sql
 -- GROUP BY : Résume les données (moins de lignes en sortie)
-SELECT categorie_id, AVG(prix) as prix_moyen
-FROM livres
-GROUP BY categorie_id;
+SELECT categorie_id, AVG(prix) as prix_moyen  
+FROM livres  
+GROUP BY categorie_id;  
 -- Résultat : 1 ligne par catégorie
 
 -- WINDOW : Garde toutes les lignes + ajoute des calculs
@@ -33,7 +33,7 @@ FROM livres;
 
 ## Syntaxe de base
 
-```sql
+```text
 SELECT
     colonnes,
     fonction_window() OVER (
@@ -55,20 +55,25 @@ FROM table;
 Enrichissons notre base de données pour les exemples :
 
 ```sql
--- Ajoutons plus de données réalistes
+-- Ajoutons plus de données réalistes — répartition dans PLUSIEURS catégories
+-- pour que `PARTITION BY categorie_id` plus loin produise des partitions non triviales.
 INSERT INTO livres VALUES
-(7, 'Carrie', 14.50, 2, 4, 7, '1974-04-05'),
-(8, 'Misery', 17.25, 2, 4, 3, '1987-06-08'),
-(9, 'La Peste', 13.75, 1, 4, 4, '1947-06-10'),
-(10, 'Létranger', 11.99, 1, 4, 6, '1942-05-19');
+(7, 'Carrie',                       14.50, 2, 4, 7, '1974-04-05'),  -- Stephen King, Roman
+(8, 'Misery',                       17.25, 2, 4, 3, '1987-06-08'),  -- Stephen King, Roman
+(9, 'Les Contemplations',           13.75, 1, 5, 4, '1856-04-23'),  -- Victor Hugo, Poésie
+(10, 'La Légende des siècles',      11.99, 1, 5, 6, '1859-09-26'),  -- Victor Hugo, Poésie
+(19, 'Histoire de l''art',          23.50, 4, 6, 5, '1934-03-12'),  -- A. Christie, Histoire
+(20, 'Auteurs japonais : panorama', 19.99, 3, 7, 3, '2015-06-15');  -- Murakami, Biographie
 
 INSERT INTO commandes VALUES
-(7, 1, 7, 1, '2024-01-21'),
-(8, 2, 8, 2, '2024-01-22'),
-(9, 3, 9, 1, '2024-01-23'),
+(7,  1, 7,  1, '2024-01-21'),
+(8,  2, 8,  2, '2024-01-22'),
+(9,  3, 9,  1, '2024-01-23'),
 (10, 1, 10, 1, '2024-01-24'),
-(11, 2, 1, 1, '2024-02-01'),
-(12, 3, 3, 2, '2024-02-02');
+(11, 2, 1,  1, '2024-02-01'),
+(12, 3, 3,  2, '2024-02-02'),
+(21, 1, 19, 1, '2024-02-15'),
+(22, 2, 20, 2, '2024-03-05');
 
 -- Table pour les ventes quotidiennes
 CREATE TABLE ventes_quotidiennes (
@@ -89,6 +94,8 @@ INSERT INTO ventes_quotidiennes VALUES
 ('2024-01-24', 189.75);
 ```
 
+> 📊 **Distribution après ces INSERT** : `Roman` (4) → 8 livres, `Poésie` (5) → 2 livres, `Histoire` (6) → 1 livre, `Biographie` (7) → 1 livre. C'est suffisamment varié pour que `PARTITION BY categorie_id` produise plus d'une partition.
+
 ## Types de fonctions de fenêtrage
 
 ### 1. 🏆 Fonctions de classement
@@ -102,8 +109,8 @@ SELECT
     RANK() OVER (ORDER BY prix DESC) as rang,
     DENSE_RANK() OVER (ORDER BY prix DESC) as rang_dense,
     ROW_NUMBER() OVER (ORDER BY prix DESC) as numero_ligne
-FROM livres
-ORDER BY prix DESC;
+FROM livres  
+ORDER BY prix DESC;  
 ```
 
 **Différences entre les fonctions de classement :**
@@ -134,9 +141,9 @@ SELECT
         WHEN 3 THEN '🥉 Troisième'
         ELSE '📚 Autre'
     END as medaille
-FROM livres_classes
-WHERE rang_categorie <= 3
-ORDER BY categorie, rang_categorie;
+FROM livres_classes  
+WHERE rang_categorie <= 3  
+ORDER BY categorie, rang_categorie;  
 ```
 
 ### 2. 📊 Fonctions de navigation
@@ -154,8 +161,8 @@ SELECT
         (prix - LAG(prix) OVER (ORDER BY prix)) * 100.0 / LAG(prix) OVER (ORDER BY prix),
         1
     ) as pourcent_augmentation
-FROM livres
-ORDER BY prix;
+FROM livres  
+ORDER BY prix;  
 ```
 
 #### FIRST_VALUE() et LAST_VALUE() - Première et dernière valeur
@@ -180,10 +187,29 @@ SELECT
         ORDER BY L.prix
         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
     ) as ecart_avec_min
-FROM livres L
-JOIN categories C ON L.categorie_id = C.id
-ORDER BY C.nom, L.prix;
+FROM livres L  
+JOIN categories C ON L.categorie_id = C.id  
+ORDER BY C.nom, L.prix;  
 ```
+
+> ⚠️ **Piège majeur de `LAST_VALUE` : la frame par défaut.** Quand un `OVER` contient un `ORDER BY` **mais pas** de clause `ROWS`/`RANGE` explicite, la frame par défaut est `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. Autrement dit, la fenêtre s'arrête à la ligne courante — donc `LAST_VALUE` **retourne la valeur de la ligne courante**, pas le maximum de la partition !  
+>  
+> ```sql
+> -- ❌ PIÈGE : LAST_VALUE sans frame explicite = ligne courante
+> SELECT prix,
+>        LAST_VALUE(prix) OVER (ORDER BY prix) as faux_max
+> FROM livres;  -- → faux_max = prix de chaque ligne, pas le max global
+>
+> -- ✅ CORRECT : frame explicite couvrant toute la partition
+> SELECT prix,
+>        LAST_VALUE(prix) OVER (
+>            ORDER BY prix
+>            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+>        ) as vrai_max
+> FROM livres;  -- → vrai_max = max global pour toutes les lignes
+> ```
+>  
+> 💡 **Mémo** : `FIRST_VALUE` est rarement piégeux (la frame commence à `UNBOUNDED PRECEDING` par défaut), mais `LAST_VALUE` **demande presque toujours** une frame explicite jusqu'à `UNBOUNDED FOLLOWING`. `RANK`, `DENSE_RANK`, `ROW_NUMBER`, `LAG`, `LEAD` ignorent la frame — pas de souci pour eux.
 
 ### 3. 📈 Fonctions d'agrégation avec fenêtrage
 
@@ -211,8 +237,8 @@ SELECT
         WHEN montant > AVG(montant) OVER () THEN '📈 Au-dessus'
         ELSE '📉 En-dessous'
     END as vs_moyenne
-FROM ventes_quotidiennes
-ORDER BY date_vente;
+FROM ventes_quotidiennes  
+ORDER BY date_vente;  
 ```
 
 ## Clause ROWS et RANGE - Définir la fenêtre
@@ -246,8 +272,8 @@ SELECT
     ROUND(AVG(montant) OVER (
         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
     ), 2) as moyenne_totale
-FROM ventes_quotidiennes
-ORDER BY date_vente;
+FROM ventes_quotidiennes  
+ORDER BY date_vente;  
 ```
 
 ### Options de fenêtrage :
@@ -257,6 +283,38 @@ ORDER BY date_vente;
 - **n FOLLOWING** : n lignes après
 - **UNBOUNDED PRECEDING** : Depuis le début
 - **UNBOUNDED FOLLOWING** : Jusqu'à la fin
+
+### 🔬 Visualisation : 4 frames classiques sur 10 lignes ordonnées par date
+
+Pour 10 ventes du 15 au 24 jan, voici la fenêtre **vue depuis la ligne du 20 jan** (6ᵉ ligne) :
+
+```
+                    15  16  17  18  19  20  21  22  23  24
+Ligne courante :                         ▼
+                    ┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┐
+                    │   │   │   │   │   │ ★ │   │   │   │   │   ← position
+                    └───┴───┴───┴───┴───┴───┴───┴───┴───┴───┘
+
+ROWS BETWEEN 2 PRECEDING AND CURRENT ROW       (moyenne mobile 3 jours)
+                                ▲   ▲   ▲
+                                │ 3 lignes : 18, 19, 20
+
+ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING       (moyenne centrée 3 jours)
+                                    ▲   ▲   ▲
+                                    │ 3 lignes : 19, 20, 21
+
+ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW  (cumul depuis le début)
+                    ▲   ▲   ▲   ▲   ▲   ▲
+                    │ 6 lignes : 15, 16, 17, 18, 19, 20
+
+ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING  (toute la partition)
+                    ▲   ▲   ▲   ▲   ▲   ▲   ▲   ▲   ▲   ▲
+                    │ 10 lignes : tout
+```
+
+> 💡 **Frame par défaut** (quand `OVER` contient `ORDER BY` mais aucune clause `ROWS`/`RANGE`) : `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` — équivalent au 3ᵉ schéma. C'est ce qui piège `LAST_VALUE` (voir encart précédent).
+
+> ⚠️ **`ROWS` vs `RANGE`** : `ROWS` compte le **nombre de lignes physiques** ; `RANGE` compte les **valeurs de l'ORDER BY**. Si plusieurs lignes ont la même clé de tri, `RANGE` les inclut toutes en bloc — souvent contre-intuitif. Préférer `ROWS` quand on veut une fenêtre déterministe en nombre de lignes.
 
 ## Exemples avancés et cas d'usage
 
@@ -312,8 +370,8 @@ SELECT
         WHEN 2 THEN '⚠️ Moyen (50%)'
         ELSE '❌ Faible (25%)'
     END as performance
-FROM analyse_ventes
-ORDER BY date_vente;
+FROM analyse_ventes  
+ORDER BY date_vente;  
 ```
 
 ### 2. Analyse des comportements clients
@@ -368,8 +426,8 @@ SELECT
         ELSE '⭐ Fidèle'
     END as statut_fidelite,
     total_cumule
-FROM historique_clients
-ORDER BY nom, date_commande;
+FROM historique_clients  
+ORDER BY nom, date_commande;  
 ```
 
 ### 3. Analyse de performance produits
@@ -426,8 +484,8 @@ SELECT
         WHEN stock < total_vendus * 2 THEN '⚠️ Stock juste'
         ELSE '✅ Stock OK'
     END as statut_stock
-FROM stats_livres
-ORDER BY total_vendus DESC, revenus_total DESC;
+FROM stats_livres  
+ORDER BY total_vendus DESC, revenus_total DESC;  
 ```
 
 ## Clause WINDOW - Réutiliser les définitions
@@ -451,8 +509,8 @@ SELECT
     RANK() OVER win as rang,
     AVG(prix) OVER win as moy,
     COUNT(*) OVER win as nb
-FROM livres
-WINDOW win AS (PARTITION BY categorie_id ORDER BY prix DESC);
+FROM livres  
+WINDOW win AS (PARTITION BY categorie_id ORDER BY prix DESC);  
 ```
 
 ## Exercices pratiques
@@ -472,8 +530,8 @@ SELECT
         WHEN RANK() OVER (ORDER BY prix DESC) <= 3 THEN '🏆 Top 3'
         ELSE '📚 Autre'
     END as statut
-FROM livres
-ORDER BY prix DESC;
+FROM livres  
+ORDER BY prix DESC;  
 ```
 </details>
 
@@ -491,8 +549,8 @@ SELECT
     LEAD(prix) OVER (ORDER BY titre) as prix_suivant,
     prix - LAG(prix) OVER (ORDER BY titre) as diff_precedent,
     LEAD(prix) OVER (ORDER BY titre) - prix as diff_suivant
-FROM livres
-ORDER BY titre;
+FROM livres  
+ORDER BY titre;  
 ```
 </details>
 
@@ -550,8 +608,8 @@ SELECT
         WHEN rang_performance <= 6 THEN '✅ Bon'
         ELSE '⚠️ À améliorer'
     END as evaluation
-FROM analyse_complete
-ORDER BY date_vente;
+FROM analyse_complete  
+ORDER BY date_vente;  
 ```
 </details>
 
@@ -575,8 +633,8 @@ SELECT
     titre,
     RANK() OVER win,
     AVG(prix) OVER win
-FROM livres
-WINDOW win AS (PARTITION BY categorie_id ORDER BY prix);
+FROM livres  
+WINDOW win AS (PARTITION BY categorie_id ORDER BY prix);  
 ```
 
 3. **Attention aux fenêtres complètes :**
@@ -587,22 +645,37 @@ SELECT montant, AVG(montant) OVER (
 ) FROM ventes_quotidiennes;
 
 -- ✅ MIEUX : Si vous voulez juste la moyenne générale
-SELECT montant, (SELECT AVG(montant) FROM ventes_quotidiennes)
-FROM ventes_quotidiennes;
+SELECT montant, (SELECT AVG(montant) FROM ventes_quotidiennes)  
+FROM ventes_quotidiennes;  
 ```
 
 ### 🚫 **Erreurs courantes :**
 
 1. **Confondre avec GROUP BY :**
-```sql
--- ❌ ERREUR : Mélanger GROUP BY et WINDOW
-SELECT categorie_id, COUNT(*), RANK() OVER (ORDER BY prix)
-FROM livres GROUP BY categorie_id; -- Ne marchera pas !
 
--- ✅ CORRECT : Soit l'un, soit l'autre
+SQLite **autorise** techniquement de combiner `GROUP BY` et fonctions de fenêtrage (les fonctions WINDOW sont appliquées **après** le `GROUP BY`), mais le résultat est souvent **contre-intuitif** :
+
+```sql
+-- ⚠️ Compile sans erreur, mais le sens est piégeux
+SELECT categorie_id, COUNT(*) AS nb, RANK() OVER (ORDER BY prix) AS rang  
+FROM livres  
+GROUP BY categorie_id;  
+-- → SQLite choisit une valeur arbitraire de `prix` pour chaque groupe,
+--   puis applique RANK() sur ces valeurs agrégées. Le résultat est rarement celui attendu.
+
+-- ✅ CORRECT : choisir UN seul des deux outils
+-- (a) Agrégation classique
 SELECT categorie_id, COUNT(*) FROM livres GROUP BY categorie_id;
--- OU
+-- (b) Fonction de fenêtrage sans GROUP BY (chaque ligne conservée)
 SELECT titre, prix, RANK() OVER (ORDER BY prix) FROM livres;
+-- (c) Combiner via une CTE : agréger d'abord, puis classer
+WITH par_cat AS (
+    SELECT categorie_id, COUNT(*) AS nb, AVG(prix) AS prix_moy
+    FROM livres GROUP BY categorie_id
+)
+SELECT categorie_id, nb, prix_moy,
+       RANK() OVER (ORDER BY prix_moy DESC) AS rang_par_prix_moy
+FROM par_cat;
 ```
 
 ## Résumé
@@ -636,4 +709,4 @@ Les fonctions de fenêtrage transforment votre capacité d'analyse ! Elles sont 
 
 Dans la prochaine section, nous découvrirons comment utiliser les **expressions régulières** pour des recherches et validations de données avancées.
 
-⏭️
+⏭️ [4.4 Expressions régulières (REGEXP)](/04-requetes-avancees-optimisation/04-expressions-regulieres-regexp.md)

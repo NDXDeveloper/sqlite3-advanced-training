@@ -17,7 +17,8 @@ Pensez à ces fonctions comme aux **"Si... alors... sinon"** de vos requêtes SQ
 ### Deux syntaxes de CASE
 
 #### 1. CASE simple (comparaison directe)
-```sql
+
+```text
 CASE colonne
     WHEN valeur1 THEN resultat1
     WHEN valeur2 THEN resultat2
@@ -26,7 +27,8 @@ END
 ```
 
 #### 2. CASE avec conditions (plus flexible)
-```sql
+
+```text
 CASE
     WHEN condition1 THEN resultat1
     WHEN condition2 THEN resultat2
@@ -40,15 +42,21 @@ Ajoutons des données avec des valeurs NULL et variées pour nos exemples :
 
 ```sql
 -- Ajoutons plus de variété dans nos données
+-- Note : la table `livres` du 4.2 a `prix REAL NOT NULL`. Pour illustrer
+-- la gestion des valeurs « manquantes », on utilise 0.00 comme sentinelle
+-- (qui sera convertie en NULL par NULLIF(prix, 0) dans les requêtes).
 INSERT INTO livres VALUES
 (16, 'Livre gratuit', 0.00, 1, 4, 100, '2023-01-01'),
 (17, 'Livre premium', 99.99, 2, 4, 1, '2023-06-15'),
-(18, 'Livre sans prix', NULL, 3, 4, 5, '2023-03-20');
+(18, 'Livre sans prix', 0.00, 3, 4, 5, '2023-03-20');
 
+-- Note : la table `clients` du chapitre 4.2 a `nom TEXT NOT NULL`.
+-- Pour illustrer la gestion des valeurs « vides », on utilise une chaîne vide
+-- (qui sera convertie en NULL par NULLIF plus loin) plutôt qu'un NULL direct.
 INSERT INTO clients VALUES
-(9, NULL, 'anonyme@test.com', 'Inconnu'),
+(9, '', 'anonyme@test.com', 'Inconnu'),
 (10, 'Client VIP', 'vip@luxury.com', NULL),
-(11, '', 'vide@test.com', 'France');
+(11, ' ', 'vide@test.com', 'France');
 
 -- Table avec plus de variations
 CREATE TABLE employes (
@@ -104,8 +112,8 @@ SELECT
         WHEN prix < 50 THEN '💎 Cher'
         ELSE '👑 Premium'
     END as gamme_prix
-FROM livres
-ORDER BY prix NULLS LAST;
+FROM livres  
+ORDER BY prix NULLS LAST;  
 ```
 
 ### Exemple 2 : CASE simple vs CASE avec conditions
@@ -159,8 +167,8 @@ SELECT
         WHEN stock <= 2 THEN '⚠️ Majoration +10%'
         ELSE '➡️ Prix normal'
     END as statut_prix
-FROM livres
-ORDER BY stock;
+FROM livres  
+ORDER BY stock;  
 ```
 
 ### 2. Agrégations conditionnelles
@@ -185,10 +193,10 @@ SELECT
         WHEN salaire >= 35000 THEN salaire * 0.05  -- Bonus 5% pour salaires moyens
         ELSE salaire * 0.02  -- Bonus 2% pour autres
     END) as total_bonus_estime
-FROM employes
-WHERE departement IS NOT NULL
-GROUP BY departement
-ORDER BY total_employes DESC;
+FROM employes  
+WHERE departement IS NOT NULL  
+GROUP BY departement  
+ORDER BY total_employes DESC;  
 ```
 
 ### 3. CASE imbriqués (conditions complexes)
@@ -233,8 +241,8 @@ SELECT
         WHEN julianday('now') - julianday(date_embauche) >= 365 * 1 THEN '⚡ Expérimenté (1-3 ans)'
         ELSE '🌱 Nouveau (<1 an)'
     END as anciennete
-FROM employes
-ORDER BY departement, salaire DESC NULLS LAST;
+FROM employes  
+ORDER BY departement, salaire DESC NULLS LAST;  
 ```
 
 ## COALESCE : Gestion intelligente des NULL
@@ -243,7 +251,7 @@ ORDER BY departement, salaire DESC NULLS LAST;
 
 **COALESCE** retourne la première valeur non-NULL parmi une liste d'expressions. C'est l'outil parfait pour gérer les valeurs manquantes !
 
-```sql
+```text
 COALESCE(valeur1, valeur2, valeur3, ..., valeur_par_defaut)
 ```
 
@@ -332,10 +340,10 @@ SELECT
     ROUND(
         COUNT(CASE WHEN montant IS NOT NULL THEN 1 END) * 100.0 / COUNT(*), 1
     ) as taux_montant_complete
-FROM ventes_detaillees
-WHERE COALESCE(region, 'Non assignée') != 'Non assignée'  -- Exclure les régions non assignées
-GROUP BY region
-ORDER BY total_montant DESC;
+FROM ventes_detaillees  
+WHERE COALESCE(region, 'Non assignée') != 'Non assignée'  -- Exclure les régions non assignées  
+GROUP BY region  
+ORDER BY total_montant DESC;  
 ```
 
 ## NULLIF : Convertir des valeurs en NULL
@@ -344,7 +352,7 @@ ORDER BY total_montant DESC;
 
 **NULLIF** retourne NULL si deux expressions sont égales, sinon retourne la première expression. C'est utile pour "nettoyer" des données en convertissant certaines valeurs en NULL.
 
-```sql
+```text
 NULLIF(expression1, expression2)
 -- Si expression1 = expression2, retourne NULL
 -- Sinon retourne expression1
@@ -407,8 +415,8 @@ SELECT
         WHEN departement IS NULL THEN '⚠️ Département manquant'
         ELSE '✅ Données complètes'
     END as qualite_donnees
-FROM donnees_nettoyees
-ORDER BY qualite_donnees, id;
+FROM donnees_nettoyees  
+ORDER BY qualite_donnees, id;  
 ```
 
 #### 2. Calculs statistiques précis
@@ -440,9 +448,9 @@ SELECT
         WHEN montant >= 1000 THEN '⚠️ Moyen'
         ELSE '❌ Faible'
     END as performance
-FROM ventes_detaillees
-WHERE COALESCE(region, '') != ''  -- Exclure les régions vides
-ORDER BY montant DESC NULLS LAST;
+FROM ventes_detaillees  
+WHERE COALESCE(region, '') != ''  -- Exclure les régions vides  
+ORDER BY montant DESC NULLS LAST;  
 ```
 
 ## Combinaison des trois fonctions
@@ -523,8 +531,8 @@ SELECT
         WHEN total_montant >= 2000 THEN '🎉 Félicitations ! Maintenir niveau'
         ELSE '📈 Potentiel d''amélioration'
     END as recommandation
-FROM calculs_vendeur
-ORDER BY total_montant DESC;
+FROM calculs_vendeur  
+ORDER BY total_montant DESC;  
 ```
 
 ## Exemples de cas d'usage métier
@@ -583,8 +591,8 @@ SELECT
             '💰 Offre montée en gamme'
         ELSE '✅ Suivi standard'
     END as action_marketing
-FROM historique_achats
-ORDER BY total_achats DESC;
+FROM historique_achats  
+ORDER BY total_achats DESC;  
 ```
 
 ### 2. Tableau de bord des stocks
@@ -621,10 +629,13 @@ SELECT
     END as priorite_reappro,
 
     -- Quantité suggérée à commander
+    -- ⚠️ SQLite n'a PAS `GREATEST`/`LEAST` (≠ MySQL/PostgreSQL).
+    --    On utilise `MAX(a, b, …)` / `MIN(a, b, …)` qui, **avec plusieurs arguments**,
+    --    sont des fonctions scalaires (et non agrégats).
     CASE
-        WHEN L.stock = 0 THEN GREATEST(COALESCE(SUM(C.quantite), 0) * 2, 5)
+        WHEN L.stock = 0 THEN MAX(COALESCE(SUM(C.quantite), 0) * 2, 5)
         WHEN L.stock <= COALESCE(SUM(C.quantite), 0) * 0.5 THEN
-            GREATEST(COALESCE(SUM(C.quantite), 0) * 2 - L.stock, 1)
+            MAX(COALESCE(SUM(C.quantite), 0) * 2 - L.stock, 1)
         ELSE 0
     END as quantite_a_commander,
 
@@ -638,10 +649,10 @@ SELECT
         WHEN COALESCE(SUM(C.quantite), 0) >= 3 THEN '✅ Bon vendeur'
         ELSE '📈 Vendeur moyen'
     END as performance_vente
-FROM livres L
-LEFT JOIN commandes C ON L.id = C.livre_id
-GROUP BY L.id, L.titre, L.prix, L.stock
-ORDER BY
+FROM livres L  
+LEFT JOIN commandes C ON L.id = C.livre_id  
+GROUP BY L.id, L.titre, L.prix, L.stock  
+ORDER BY  
     CASE
         WHEN L.stock = 0 THEN 1
         WHEN L.stock <= COALESCE(SUM(C.quantite), 0) * 0.5 THEN 2
@@ -668,8 +679,8 @@ SELECT
         WHEN prix < 20 THEN 'Abordable'
         ELSE 'Cher'
     END as Prix_Categorie
-FROM livres
-ORDER BY prix NULLS LAST;
+FROM livres  
+ORDER BY prix NULLS LAST;  
 ```
 </details>
 
@@ -693,8 +704,8 @@ SELECT
         nom,
         'Employé_' || id
     ) as nom_affichage
-FROM employes
-ORDER BY id;
+FROM employes  
+ORDER BY id;  
 ```
 </details>
 
@@ -810,8 +821,8 @@ SELECT
             '✨ Candidat programme mentorat'
         ELSE '📋 Suivi standard'
     END as recommandation
-FROM ventes_completes
-ORDER BY remuneration_totale DESC;
+FROM ventes_completes  
+ORDER BY remuneration_totale DESC;  
 ```
 </details>
 
@@ -820,7 +831,8 @@ ORDER BY remuneration_totale DESC;
 ### ✅ **Bonnes pratiques CASE :**
 
 1. **Ordre des conditions** : Mettez les conditions les plus spécifiques en premier
-```sql
+
+```text
 -- ✅ BON : du plus spécifique au plus général
 CASE
     WHEN prix IS NULL THEN 'Prix manquant'
@@ -839,7 +851,8 @@ END
 ```
 
 2. **Toujours prévoir un ELSE** pour éviter les NULL inattendus
-```sql
+
+```text
 -- ✅ BON
 CASE
     WHEN condition1 THEN 'Résultat1'
@@ -858,7 +871,8 @@ END
 ### ✅ **Bonnes pratiques COALESCE :**
 
 1. **Ordre logique** : du plus spécifique au plus général
-```sql
+
+```text
 -- ✅ BON : ordre logique
 COALESCE(
     salaire_reel,           -- Valeur précise
@@ -872,7 +886,8 @@ COALESCE(25000, salaire_reel)  -- Retournera toujours 25000 !
 ```
 
 2. **Types de données cohérents**
-```sql
+
+```text
 -- ✅ BON : même type
 COALESCE(prix_actuel, prix_precedent, 0.0)
 
@@ -883,6 +898,7 @@ COALESCE(prix_actuel, 'Prix manquant', 0)  -- Problème de types !
 ### ✅ **Bonnes pratiques NULLIF :**
 
 1. **Nettoyage systématique**
+
 ```sql
 -- ✅ BON : nettoyer avant traitement
 WITH donnees_propres AS (
@@ -896,31 +912,39 @@ SELECT * FROM donnees_propres WHERE nom_propre IS NOT NULL;
 ```
 
 2. **Éviter les divisions par zéro**
-```sql
--- ✅ BON : sécurisé
+
+```text
+-- ✅ BON : sécurisé (suppose une table `statistiques(total_ventes, nb_clients)`)
 SELECT
     total_ventes,
     nb_clients,
     ROUND(total_ventes / NULLIF(nb_clients, 0), 2) as moyenne_par_client
 FROM statistiques;
 
--- ❌ DANGEREUX : division par zéro possible
-SELECT total_ventes / nb_clients FROM statistiques;  -- ERREUR si nb_clients = 0
+-- ⚠️ NULL SILENCIEUX : SQLite ne lève PAS d'erreur sur `x / 0` (≠ PostgreSQL/MySQL en mode strict),
+--    il retourne `NULL`. Sans NULLIF, ce NULL « anormal » se mélange aux NULL « légitimes » et
+--    pollue les agrégations. Utiliser NULLIF rend l'intention explicite et permet ensuite de
+--    traiter le cas via COALESCE.
+SELECT total_ventes / nb_clients FROM statistiques;  -- NULL si nb_clients = 0, sans avertissement
 ```
 
 ### 🚫 **Erreurs courantes à éviter :**
 
 1. **Confusion entre NULL et chaîne vide**
+
 ```sql
 -- ⚠️ ATTENTION : '' n'est pas NULL !
 SELECT COALESCE('', 'valeur_defaut');  -- Retourne '' pas 'valeur_defaut'
+```
 
--- ✅ SOLUTION : nettoyer d'abord
-SELECT COALESCE(NULLIF(TRIM(champ), ''), 'valeur_defaut');
+```text
+-- ✅ SOLUTION : nettoyer d'abord (sur n'importe quelle colonne TEXT `champ`)
+SELECT COALESCE(NULLIF(TRIM(champ), ''), 'valeur_defaut') FROM ma_table;
 ```
 
 2. **CASE sans ELSE dans des calculs**
-```sql
+
+```text
 -- ❌ DANGEREUX : peut créer des NULL inattendus
 SELECT
     prix * CASE WHEN categorie = 'Premium' THEN 1.2 END as prix_ajuste
@@ -938,6 +962,7 @@ FROM produits;
 
 ```sql
 -- Exemple de nettoyage de données en pipeline
+-- (la table `employes` du 4.5 n'a pas de colonne `email` ; on travaille sur les colonnes existantes)
 WITH etape1_nullif AS (
     -- Étape 1 : Convertir les "fausses" valeurs en NULL
     SELECT
@@ -945,14 +970,16 @@ WITH etape1_nullif AS (
         NULLIF(TRIM(nom), '') as nom,
         NULLIF(TRIM(prenom), '') as prenom,
         NULLIF(salaire, 0) as salaire,
-        NULLIF(TRIM(departement), '') as departement,
-        NULLIF(TRIM(LOWER(email)), '') as email
+        NULLIF(TRIM(departement), '') as departement
     FROM employes
 ),
 etape2_coalesce AS (
     -- Étape 2 : Remplacer les NULL par des valeurs par défaut intelligentes
+    -- On garde aussi les colonnes originales (nom, prenom, salaire, departement)
+    -- pour le calcul du score qualité dans l'étape 3.
     SELECT
         id,
+        nom, prenom, salaire, departement,
         COALESCE(nom, 'Nom_' || id) as nom_final,
         COALESCE(prenom, 'Prénom_' || id) as prenom_final,
         COALESCE(
@@ -964,8 +991,7 @@ etape2_coalesce AS (
                 ELSE 30000
             END
         ) as salaire_final,
-        COALESCE(departement, 'Non assigné') as departement_final,
-        email
+        COALESCE(departement, 'Non assigné') as departement_final
     FROM etape1_nullif
 )
 -- Étape 3 : Catégorisation avec CASE
@@ -993,14 +1019,19 @@ SELECT
         WHEN nom IS NOT NULL THEN 50
         ELSE 25
     END as score_qualite_donnees
-FROM etape2_coalesce
-ORDER BY score_qualite_donnees DESC, salaire_final DESC;
+FROM etape2_coalesce  
+ORDER BY score_qualite_donnees DESC, salaire_final DESC;  
 ```
 
-### 2. Système de scoring complexe
+### 2. Système de scoring complexe (RFM)
+
+> 💡 **Modèle RFM** (Recency / Frequency / Monetary) : approche classique de segmentation client basée sur trois dimensions — quand a-t-il commandé pour la dernière fois (récence), à quelle fréquence, et pour combien. Nous allons le construire **en 3 étapes** pour rester lisible.
+
+#### Étape 1 — Agréger les indicateurs bruts par client
+
+Première CTE : pour chaque client, on calcule les agrégats nécessaires au scoring. Le `LEFT JOIN` garantit qu'un client sans commande apparaît quand même (avec `nb_commandes = 0`).
 
 ```sql
--- Système de scoring client avec logique métier complexe
 WITH scoring_base AS (
     SELECT
         CL.id,
@@ -1014,78 +1045,136 @@ WITH scoring_base AS (
     LEFT JOIN commandes C ON CL.id = C.client_id
     LEFT JOIN livres L ON C.livre_id = L.id
     GROUP BY CL.id, CL.nom
+)
+SELECT * FROM scoring_base;   -- 👀 Sortie typique : 1 ligne par client avec ses agrégats
+```
+
+#### Étape 2 — Convertir chaque agrégat en score partiel (CASE)
+
+Deuxième CTE : on transforme chaque indicateur brut en score sur une échelle fixe (0 → max). Chaque CASE encode une **règle métier**. La somme maximale = 30 + 40 + 20 + 10 = **100 points**.
+
+```sql
+WITH scoring_base AS (
+    -- (… identique à l'étape 1 …)
+    SELECT CL.id, CL.nom, COUNT(C.id) as nb_commandes,
+           COALESCE(SUM(L.prix * C.quantite), 0) as total_achats,
+           COALESCE(AVG(L.prix * C.quantite), 0) as panier_moyen,
+           MAX(C.date_commande) as derniere_commande,
+           MIN(C.date_commande) as premiere_commande
+    FROM clients CL
+    LEFT JOIN commandes C ON CL.id = C.client_id
+    LEFT JOIN livres L ON C.livre_id = L.id
+    GROUP BY CL.id, CL.nom
 ),
 scoring_detaille AS (
     SELECT
         *,
-        -- Score fréquence (0-30 points)
+        -- Score fréquence (0-30 points) : combien de commandes ?
         CASE
             WHEN nb_commandes >= 10 THEN 30
-            WHEN nb_commandes >= 5 THEN 25
-            WHEN nb_commandes >= 3 THEN 20
-            WHEN nb_commandes >= 2 THEN 15
-            WHEN nb_commandes = 1 THEN 10
+            WHEN nb_commandes >= 5  THEN 25
+            WHEN nb_commandes >= 3  THEN 20
+            WHEN nb_commandes >= 2  THEN 15
+            WHEN nb_commandes  = 1  THEN 10
             ELSE 0
         END as score_frequence,
 
-        -- Score montant (0-40 points)
+        -- Score montant (0-40 points) : combien dépensé au total ?
         CASE
             WHEN total_achats >= 500 THEN 40
             WHEN total_achats >= 300 THEN 35
             WHEN total_achats >= 200 THEN 30
             WHEN total_achats >= 100 THEN 25
-            WHEN total_achats >= 50 THEN 20
-            WHEN total_achats > 0 THEN 15
+            WHEN total_achats >= 50  THEN 20
+            WHEN total_achats  > 0   THEN 15
             ELSE 0
         END as score_montant,
 
-        -- Score récence (0-20 points)
+        -- Score récence (0-20 points) : combien de jours depuis la dernière commande ?
         CASE
-            WHEN derniere_commande IS NULL THEN 0
-            WHEN julianday('now') - julianday(derniere_commande) <= 30 THEN 20
-            WHEN julianday('now') - julianday(derniere_commande) <= 90 THEN 15
-            WHEN julianday('now') - julianday(derniere_commande) <= 180 THEN 10
-            WHEN julianday('now') - julianday(derniere_commande) <= 365 THEN 5
+            WHEN derniere_commande IS NULL                                  THEN 0
+            WHEN julianday('now') - julianday(derniere_commande) <= 30      THEN 20
+            WHEN julianday('now') - julianday(derniere_commande) <= 90      THEN 15
+            WHEN julianday('now') - julianday(derniere_commande) <= 180     THEN 10
+            WHEN julianday('now') - julianday(derniere_commande) <= 365     THEN 5
             ELSE 0
         END as score_recence,
 
-        -- Score fidélité (0-10 points)
+        -- Score fidélité (0-10 points) : combien de temps depuis la 1ʳᵉ commande ?
         CASE
-            WHEN premiere_commande IS NULL THEN 0
-            WHEN julianday('now') - julianday(premiere_commande) >= 730 THEN 10  -- 2+ ans
-            WHEN julianday('now') - julianday(premiere_commande) >= 365 THEN 8   -- 1+ an
-            WHEN julianday('now') - julianday(premiere_commande) >= 180 THEN 6   -- 6+ mois
-            WHEN julianday('now') - julianday(premiere_commande) >= 90 THEN 4    -- 3+ mois
+            WHEN premiere_commande IS NULL                                  THEN 0
+            WHEN julianday('now') - julianday(premiere_commande) >= 730     THEN 10
+            WHEN julianday('now') - julianday(premiere_commande) >= 365     THEN 8
+            WHEN julianday('now') - julianday(premiere_commande) >= 180     THEN 6
+            WHEN julianday('now') - julianday(premiere_commande) >= 90      THEN 4
             ELSE 2
         END as score_fidelite
     FROM scoring_base
 )
+SELECT nom, score_frequence, score_montant, score_recence, score_fidelite  
+FROM scoring_detaille;   -- 👀 Sortie : 4 scores partiels par client  
+```
+
+#### Étape 3 — Sommer, segmenter, et recommander une action
+
+Troisième et dernière CTE : on additionne les 4 scores pour obtenir le **score_total** (sur 100), puis on l'utilise pour segmenter le client et choisir une action marketing.
+
+> ⚠️ Pourquoi une 3ᵉ CTE pour le `score_total` ? **En SQLite, on ne peut pas réutiliser un alias dans le même `SELECT`** (sauf en `ORDER BY`/`GROUP BY`). Sans cette CTE, on serait obligé de réécrire la somme entière à chaque utilisation.
+
+```sql
+WITH scoring_base AS (
+    -- (… identique aux étapes précédentes …)
+    SELECT CL.id, CL.nom, COUNT(C.id) as nb_commandes,
+           COALESCE(SUM(L.prix * C.quantite), 0) as total_achats,
+           COALESCE(AVG(L.prix * C.quantite), 0) as panier_moyen,
+           MAX(C.date_commande) as derniere_commande,
+           MIN(C.date_commande) as premiere_commande
+    FROM clients CL
+    LEFT JOIN commandes C ON CL.id = C.client_id
+    LEFT JOIN livres L ON C.livre_id = L.id
+    GROUP BY CL.id, CL.nom
+),
+scoring_detaille AS (
+    -- (… identique à l'étape 2, 4 scores partiels …)
+    SELECT *,
+        CASE WHEN nb_commandes >= 10 THEN 30 WHEN nb_commandes >= 5 THEN 25
+             WHEN nb_commandes >= 3  THEN 20 WHEN nb_commandes >= 2 THEN 15
+             WHEN nb_commandes  = 1  THEN 10 ELSE 0 END as score_frequence,
+        CASE WHEN total_achats >= 500 THEN 40 WHEN total_achats >= 300 THEN 35
+             WHEN total_achats >= 200 THEN 30 WHEN total_achats >= 100 THEN 25
+             WHEN total_achats >= 50  THEN 20 WHEN total_achats > 0   THEN 15 ELSE 0 END as score_montant,
+        CASE WHEN derniere_commande IS NULL THEN 0
+             WHEN julianday('now') - julianday(derniere_commande) <= 30  THEN 20
+             WHEN julianday('now') - julianday(derniere_commande) <= 90  THEN 15
+             WHEN julianday('now') - julianday(derniere_commande) <= 180 THEN 10
+             WHEN julianday('now') - julianday(derniere_commande) <= 365 THEN 5 ELSE 0 END as score_recence,
+        CASE WHEN premiere_commande IS NULL THEN 0
+             WHEN julianday('now') - julianday(premiere_commande) >= 730 THEN 10
+             WHEN julianday('now') - julianday(premiere_commande) >= 365 THEN 8
+             WHEN julianday('now') - julianday(premiere_commande) >= 180 THEN 6
+             WHEN julianday('now') - julianday(premiere_commande) >= 90  THEN 4 ELSE 2 END as score_fidelite
+    FROM scoring_base
+),
+scoring_avec_total AS (
+    -- CTE dédiée juste à la somme, pour pouvoir l'utiliser dans CASE / ORDER BY
+    SELECT *,
+           score_frequence + score_montant + score_recence + score_fidelite AS score_total
+    FROM scoring_detaille
+)
 SELECT
-    nom,
-    nb_commandes,
-    ROUND(total_achats, 2) as total_achats,
-    ROUND(panier_moyen, 2) as panier_moyen,
-    derniere_commande,
-
-    score_frequence,
-    score_montant,
-    score_recence,
-    score_fidelite,
-
-    -- Score total (sur 100)
-    score_frequence + score_montant + score_recence + score_fidelite as score_total,
-
-    -- Segment client basé sur le score
+    nom, nb_commandes, ROUND(total_achats, 2) as total_achats,
+    score_frequence, score_montant, score_recence, score_fidelite,
+    score_total,
+    -- Segmentation
     CASE
-        WHEN score_frequence + score_montant + score_recence + score_fidelite >= 80 THEN '👑 Champion'
-        WHEN score_frequence + score_montant + score_recence + score_fidelite >= 60 THEN '🌟 Fidèle'
-        WHEN score_frequence + score_montant + score_recence + score_fidelite >= 40 THEN '✅ Régulier'
-        WHEN score_frequence + score_montant + score_recence + score_fidelite >= 20 THEN '📈 Potentiel'
-        WHEN score_frequence + score_montant + score_recence + score_fidelite > 0 THEN '🌱 Nouveau'
+        WHEN score_total >= 80 THEN '👑 Champion'
+        WHEN score_total >= 60 THEN '🌟 Fidèle'
+        WHEN score_total >= 40 THEN '✅ Régulier'
+        WHEN score_total >= 20 THEN '📈 Potentiel'
+        WHEN score_total >  0  THEN '🌱 Nouveau'
         ELSE '😴 Inactif'
     END as segment_client,
-
-    -- Actions recommandées
+    -- Action marketing
     CASE
         WHEN score_recence = 0 AND score_frequence > 15 THEN '📧 Campagne de réactivation'
         WHEN score_montant >= 30 AND score_frequence < 20 THEN '🎁 Offre fidélité'
@@ -1094,9 +1183,16 @@ SELECT
         WHEN score_total >= 20 THEN '💌 Newsletter engagement'
         ELSE '🎯 Acquisition'
     END as action_recommandee
-FROM scoring_detaille
-ORDER BY score_total DESC;
+FROM scoring_avec_total  
+ORDER BY score_total DESC;  
 ```
+
+> 🎓 **Récapitulatif pédagogique** :  
+> 1. **CTE 1 (`scoring_base`)** → agrégats bruts (`nb_commandes`, `total_achats`, dates extrêmes)  
+> 2. **CTE 2 (`scoring_detaille`)** → 4 scores partiels via `CASE` (échelles métier)  
+> 3. **CTE 3 (`scoring_avec_total`)** → somme + segmentation + recommandation  
+>  
+> Cette décomposition rend le code lisible, **testable étape par étape** (chaque CTE peut être exécutée seule pour vérifier sa sortie), et facile à maintenir : on peut ajuster les seuils d'une étape sans toucher aux autres.
 
 ## Résumé
 
@@ -1136,5 +1232,4 @@ Ces trois fonctions transforment SQL d'un simple langage de requête en un véri
 
 Dans la prochaine section, nous découvrirons comment **interroger et manipuler des données JSON** dans SQLite, une fonctionnalité moderne pour gérer des données semi-structurées.
 
-
-⏭️
+⏭️ [4.6 Interrogation et manipulation des données JSON](/04-requetes-avancees-optimisation/06-interrogation-manipulation-donnees-json.md)

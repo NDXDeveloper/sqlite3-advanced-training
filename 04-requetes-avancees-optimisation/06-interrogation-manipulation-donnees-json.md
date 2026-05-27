@@ -47,7 +47,9 @@ Depuis SQLite 3.38 (2022), les **fonctions JSON** sont intégrées par défaut !
 - `JSON_TYPE(json, path)` : Retourne le type d'un élément
 
 ### Extraction de données
-- `JSON_EXTRACT(json, path)` ou `json -> path` : Extrait une valeur
+- `JSON_EXTRACT(json, path)` : Extrait une valeur (résultat **SQL** — texte sans guillemets)
+- `json -> path` : Extrait une valeur **au format JSON** (les chaînes gardent leurs `"…"`, utile pour récupérer un sous-objet ou un tableau)
+- `json ->> path` : Extrait une valeur **au format SQL** (équivalent à `JSON_EXTRACT` pour les types primitifs)
 - `JSON_EXTRACT(json, path1, path2, ...)` : Extrait plusieurs valeurs
 
 ### Modification de données
@@ -106,7 +108,20 @@ INSERT INTO clients_json VALUES
 
 (3, 'Charlie Dubois', 'charlie@email.com',
  JSON('{"langue": "fr", "notifications": {"email": true, "sms": true}, "categories_preferees": ["histoire", "voyage", "cuisine"], "budget_max": 30}'),
- JSON('{"source": "recherche_web", "date_inscription": "2024-03-01", "score_fidelite": 67}'));
+ JSON('{"source": "recherche_web", "date_inscription": "2024-03-01", "score_fidelite": 67}')),
+
+-- Clients supplémentaires pour des analyses (cohortes, segmentations…) plus parlantes
+(4, 'Diana Lopez', 'diana@email.com',
+ JSON('{"langue": "es", "notifications": {"email": true, "sms": false}, "categories_preferees": ["fiction", "voyage"], "budget_max": 60}'),
+ JSON('{"source": "publicite", "date_inscription": "2024-02-10", "score_fidelite": 78}')),
+
+(5, 'Eve Tanaka', 'eve@email.com',
+ JSON('{"langue": "en", "notifications": {"email": true, "sms": true}, "categories_preferees": ["fiction", "cuisine", "art"], "budget_max": 90}'),
+ JSON('{"source": "bouche_a_oreille", "date_inscription": "2023-11-05", "score_fidelite": 95}')),
+
+(6, 'Frank Müller', 'frank@email.com',
+ JSON('{"langue": "fr", "notifications": {"email": false, "sms": false}, "categories_preferees": ["histoire", "biographie"], "budget_max": 40}'),
+ JSON('{"source": "recherche_web", "date_inscription": "2024-04-01", "score_fidelite": 55}'));
 
 INSERT INTO produits_json VALUES
 (1, 'Smartphone Pro', 699.99,
@@ -132,24 +147,50 @@ INSERT INTO commandes_json VALUES
 
 (3, 3,
  JSON('{"articles": [{"produit_id": 2, "quantite": 3, "prix_unitaire": 29.99}], "livraison": {"adresse": "789 Avenue des Champs, Lyon", "methode": "standard", "cout": 0}, "paiement": {"methode": "virement", "reference": "VIR789"}}'),
- 'livree', '2024-01-15');
+ 'livree', '2024-01-15'),
+
+-- Commandes supplémentaires pour avoir une vraie diversité de profils
+(4, 4,
+ JSON('{"articles": [{"produit_id": 1, "quantite": 1, "prix_unitaire": 699.99}], "livraison": {"adresse": "Calle Mayor 15, Madrid", "methode": "express", "cout": 14.99}, "paiement": {"methode": "carte", "derniers_chiffres": "5678"}}'),
+ 'livree', '2024-02-12'),
+
+(5, 5,
+ JSON('{"articles": [{"produit_id": 2, "quantite": 5, "prix_unitaire": 29.99}, {"produit_id": 3, "quantite": 1, "prix_unitaire": 199.99}], "livraison": {"adresse": "Shibuya 3-1, Tokyo", "methode": "standard", "cout": 8.99}, "paiement": {"methode": "paypal", "transaction_id": "TXN789012"}}'),
+ 'expediee', '2024-03-08'),
+
+(6, 1,
+ JSON('{"articles": [{"produit_id": 3, "quantite": 1, "prix_unitaire": 199.99}], "livraison": {"adresse": "123 rue de la Paix, Paris", "methode": "express", "cout": 12.99}, "paiement": {"methode": "carte", "derniers_chiffres": "1234"}}'),
+ 'livree', '2024-03-15'),
+
+(7, 2,
+ JSON('{"articles": [{"produit_id": 1, "quantite": 1, "prix_unitaire": 699.99}, {"produit_id": 3, "quantite": 2, "prix_unitaire": 199.99}], "livraison": {"adresse": "456 Oak Street, London", "methode": "express", "cout": 19.99}, "paiement": {"methode": "carte", "derniers_chiffres": "9876"}}'),
+ 'en_cours', '2024-04-22'),
+
+(8, 6,
+ JSON('{"articles": [{"produit_id": 2, "quantite": 1, "prix_unitaire": 29.99}], "livraison": {"adresse": "Hauptstraße 5, Berlin", "methode": "standard", "cout": 6.99}, "paiement": {"methode": "virement", "reference": "VIR456"}}'),
+ 'livree', '2024-04-25');
 ```
+
+> 📊 **Distribution finale** : 6 clients (3 fr, 2 en, 1 es), 8 commandes étalées de janvier à avril 2024 — assez pour des analyses de **cohortes**, de **profils linguistiques** et de **paniers moyens** par client.
 
 ## Extraction de données JSON
 
 ### 1. Syntaxes d'extraction
 
 ```sql
--- Deux syntaxes équivalentes pour extraire des données
+-- Trois variantes pour extraire des données — leurs résultats DIFFÈRENT pour les chaînes
 SELECT
     nom,
-    -- Syntaxe fonction
-    JSON_EXTRACT(preferences, '$.langue') as langue_fonction,
-    -- Syntaxe opérateur (plus courte)
-    preferences -> '$.langue' as langue_operateur,
-    preferences ->> '$.langue' as langue_texte  -- Retourne du texte (pas de guillemets)
+    -- Forme fonction : valeur SQL (texte sans guillemets)
+    JSON_EXTRACT(preferences, '$.langue') as langue_fonction,    -- → fr
+    -- Opérateur `->` : valeur JSON (chaîne avec guillemets `"fr"`)
+    preferences -> '$.langue' as langue_operateur,               -- → "fr"
+    -- Opérateur `->>` : valeur SQL (équivalent à JSON_EXTRACT pour les types primitifs)
+    preferences ->> '$.langue' as langue_texte                   -- → fr
 FROM clients_json;
 ```
+
+> 💡 **Règle simple** : utiliser `->>` ou `JSON_EXTRACT` quand on veut **comparer** ou **utiliser** la valeur en SQL (string, nombre, etc.), et `->` quand on veut **garder le JSON intact** (par exemple pour ré-extraire ensuite ou stocker un sous-objet).
 
 ### 2. Chemins JSON (JSON Path)
 
@@ -207,28 +248,31 @@ SELECT
     nom,
     preferences ->> '$.langue' as langue,
     CAST(preferences ->> '$.budget_max' AS INTEGER) as budget_max
-FROM clients_json
-WHERE
+FROM clients_json  
+WHERE  
     -- Langue française
     preferences ->> '$.langue' = 'fr'
     -- ET budget supérieur à 40
     AND CAST(preferences ->> '$.budget_max' AS INTEGER) > 40;
 
 -- Clients avec notifications email activées
+-- ⚠️ Les booléens JSON sont convertis en INTEGER par SQLite :
+--    `true` → 1, `false` → 0 (l'opérateur `->>` retourne ces entiers,
+--    PAS les chaînes "true" / "false"). On compare donc à 1, pas à 'true'.
 SELECT
     nom,
     email,
     preferences ->> '$.notifications.email' as email_notifications
-FROM clients_json
-WHERE preferences ->> '$.notifications.email' = 'true';  -- JSON boolean en string
+FROM clients_json  
+WHERE preferences ->> '$.notifications.email' = 1;  -- 1 = true en SQLite  
 
 -- Clients fidèles (score > 80)
 SELECT
     nom,
     CAST(metadata ->> '$.score_fidelite' AS INTEGER) as score
-FROM clients_json
-WHERE CAST(metadata ->> '$.score_fidelite' AS INTEGER) > 80
-ORDER BY score DESC;
+FROM clients_json  
+WHERE CAST(metadata ->> '$.score_fidelite' AS INTEGER) > 80  
+ORDER BY score DESC;  
 ```
 
 ### 2. Recherche dans les tableaux JSON
@@ -249,16 +293,16 @@ SELECT DISTINCT
     cat.value as categorie_preferee
 FROM clients_json C,
      JSON_EACH(C.preferences, '$.categories_preferees') cat
-WHERE cat.value IN ('science', 'histoire')
-ORDER BY C.nom;
+WHERE cat.value IN ('science', 'histoire')  
+ORDER BY C.nom;  
 
 -- Compter les catégories par client
 SELECT
     nom,
     JSON_ARRAY_LENGTH(preferences, '$.categories_preferees') as nb_categories,
     preferences ->> '$.categories_preferees' as categories
-FROM clients_json
-ORDER BY nb_categories DESC;
+FROM clients_json  
+ORDER BY nb_categories DESC;  
 ```
 
 ## Modification de données JSON
@@ -267,19 +311,26 @@ ORDER BY nb_categories DESC;
 
 ```sql
 -- Modifier les préférences d'un client
-UPDATE clients_json
-SET preferences = JSON_SET(
+-- ⚠️ Subtilité : `JSON_SET(j, '$.x', true)` stocke en réalité l'INTEGER `1`
+--    (et `false` → `0`), pas un vrai booléen JSON. Pour stocker un vrai booléen,
+--    utiliser `JSON('true')` / `JSON('false')` :
+--        JSON_SET(j, '$.sms', JSON('true'))   →  {"sms": true}    -- JSON_TYPE = 'true'
+--        JSON_SET(j, '$.sms', true)           →  {"sms": 1}       -- JSON_TYPE = 'integer'
+--    Côté lecture, `->>` retourne `1`/`0` dans les deux cas — la différence
+--    est visible uniquement via `JSON_TYPE` ou si on relit le JSON brut.
+UPDATE clients_json  
+SET preferences = JSON_SET(  
     preferences,
     '$.budget_max', 100,                    -- Augmenter le budget
     '$.langue', 'fr',                       -- Changer la langue
-    '$.notifications.sms', true,            -- Activer SMS
+    '$.notifications.sms', JSON('true'),    -- Activer SMS (vrai booléen JSON)
     '$.nouvelle_propriete', 'test'          -- Ajouter nouvelle propriété
 )
 WHERE id = 1;
 
 -- Ajouter une catégorie à la liste (complexe)
-UPDATE clients_json
-SET preferences = JSON_SET(
+UPDATE clients_json  
+SET preferences = JSON_SET(  
     preferences,
     '$.categories_preferees',
     JSON_ARRAY(
@@ -295,8 +346,8 @@ WHERE id = 1 AND JSON_ARRAY_LENGTH(preferences, '$.categories_preferees') = 2;
 
 ```sql
 -- JSON_INSERT : ajoute seulement si la clé n'existe pas
-UPDATE clients_json
-SET metadata = JSON_INSERT(
+UPDATE clients_json  
+SET metadata = JSON_INSERT(  
     metadata,
     '$.derniere_connexion', '2024-01-25',    -- Nouvelle clé
     '$.score_fidelite', 999                   -- Ignoré car existe déjà
@@ -304,8 +355,8 @@ SET metadata = JSON_INSERT(
 WHERE id = 1;
 
 -- JSON_REPLACE : remplace seulement si la clé existe
-UPDATE clients_json
-SET metadata = JSON_REPLACE(
+UPDATE clients_json  
+SET metadata = JSON_REPLACE(  
     metadata,
     '$.score_fidelite', 90,                   -- Remplacé car existe
     '$.cle_inexistante', 'valeur'            -- Ignoré car n'existe pas
@@ -317,16 +368,16 @@ SELECT
     nom,
     preferences,
     metadata
-FROM clients_json
-WHERE id = 1;
+FROM clients_json  
+WHERE id = 1;  
 ```
 
 ### 3. JSON_REMOVE - Supprimer des éléments
 
 ```sql
 -- Supprimer des propriétés
-UPDATE clients_json
-SET preferences = JSON_REMOVE(
+UPDATE clients_json  
+SET preferences = JSON_REMOVE(  
     preferences,
     '$.nouvelle_propriete',                  -- Supprimer propriété ajoutée
     '$.notifications.sms'                    -- Supprimer notification SMS
@@ -334,9 +385,9 @@ SET preferences = JSON_REMOVE(
 WHERE id = 1;
 
 -- Supprimer un élément de tableau (par index)
-UPDATE produits_json
-SET tags = JSON_REMOVE(tags, '$[0]')        -- Supprimer premier tag
-WHERE id = 1;
+UPDATE produits_json  
+SET tags = JSON_REMOVE(tags, '$[0]')        -- Supprimer premier tag  
+WHERE id = 1;  
 ```
 
 ## Création de JSON dynamique
@@ -387,8 +438,8 @@ SELECT
     COUNT(*) as nb_clients,
     JSON_GROUP_ARRAY(nom) as noms_clients,
     JSON_GROUP_ARRAY(CAST(preferences ->> '$.budget_max' AS INTEGER)) as budgets
-FROM clients_json
-GROUP BY preferences ->> '$.langue';
+FROM clients_json  
+GROUP BY preferences ->> '$.langue';  
 
 -- JSON_GROUP_OBJECT : rassemble en objet JSON (clé-valeur)
 SELECT
@@ -442,8 +493,8 @@ SELECT
         WHEN budget_moyen >= 35 THEN '💰 Standard'
         ELSE '💵 Budget'
     END as profil_budget
-FROM stats_categories
-ORDER BY nb_clients DESC, budget_moyen DESC;
+FROM stats_categories  
+ORDER BY nb_clients DESC, budget_moyen DESC;  
 ```
 
 ### 2. Analyse des commandes JSON
@@ -500,8 +551,8 @@ SELECT
         WHEN 'virement' THEN '🏦 Virement'
         ELSE '💰 Autre'
     END as profil_paiement
-FROM commandes_detaillees
-ORDER BY total_commande DESC;
+FROM commandes_detaillees  
+ORDER BY total_commande DESC;  
 ```
 
 ### 3. Recommandations personnalisées
@@ -571,8 +622,8 @@ SELECT
         WHEN score_fidelite >= 65 OR budget_max >= 40 THEN 'B (Priorité normale)'
         ELSE 'C (Priorité faible)'
     END as priorite_marketing
-FROM recommandations
-ORDER BY score_fidelite DESC, budget_max DESC;
+FROM recommandations  
+ORDER BY score_fidelite DESC, budget_max DESC;  
 ```
 
 ## Index et performance avec JSON
@@ -581,9 +632,9 @@ ORDER BY score_fidelite DESC, budget_max DESC;
 
 ```sql
 -- Créer des index sur les propriétés JSON fréquemment utilisées
-CREATE INDEX idx_clients_langue ON clients_json(JSON_EXTRACT(preferences, '$.langue'));
-CREATE INDEX idx_clients_budget ON clients_json(CAST(JSON_EXTRACT(preferences, '$.budget_max') AS INTEGER));
-CREATE INDEX idx_clients_score ON clients_json(CAST(JSON_EXTRACT(metadata, '$.score_fidelite') AS INTEGER));
+CREATE INDEX idx_clients_langue ON clients_json(JSON_EXTRACT(preferences, '$.langue'));  
+CREATE INDEX idx_clients_budget ON clients_json(CAST(JSON_EXTRACT(preferences, '$.budget_max') AS INTEGER));  
+CREATE INDEX idx_clients_score ON clients_json(CAST(JSON_EXTRACT(metadata, '$.score_fidelite') AS INTEGER));  
 
 -- Index sur plusieurs propriétés JSON
 CREATE INDEX idx_clients_profil ON clients_json(
@@ -596,25 +647,27 @@ CREATE INDEX idx_clients_profil ON clients_json(
 
 ```sql
 -- Ajouter des colonnes calculées pour les requêtes fréquentes
+-- ⚠️ SQLite ne permet d'ajouter qu'une colonne **VIRTUAL** via ALTER TABLE
+--    (pas STORED). Si on veut STORED, il faut créer la table avec dès le départ.
 ALTER TABLE clients_json ADD COLUMN langue_calc TEXT
-    GENERATED ALWAYS AS (JSON_EXTRACT(preferences, '$.langue')) STORED;
+    GENERATED ALWAYS AS (JSON_EXTRACT(preferences, '$.langue')) VIRTUAL;
 
 ALTER TABLE clients_json ADD COLUMN budget_calc INTEGER
-    GENERATED ALWAYS AS (CAST(JSON_EXTRACT(preferences, '$.budget_max') AS INTEGER)) STORED;
+    GENERATED ALWAYS AS (CAST(JSON_EXTRACT(preferences, '$.budget_max') AS INTEGER)) VIRTUAL;
 
 ALTER TABLE clients_json ADD COLUMN score_calc INTEGER
-    GENERATED ALWAYS AS (CAST(JSON_EXTRACT(metadata, '$.score_fidelite') AS INTEGER)) STORED;
+    GENERATED ALWAYS AS (CAST(JSON_EXTRACT(metadata, '$.score_fidelite') AS INTEGER)) VIRTUAL;
 
 -- Index sur les colonnes calculées (plus efficace)
-CREATE INDEX idx_clients_langue_calc ON clients_json(langue_calc);
-CREATE INDEX idx_clients_budget_calc ON clients_json(budget_calc);
-CREATE INDEX idx_clients_score_calc ON clients_json(score_calc);
+CREATE INDEX idx_clients_langue_calc ON clients_json(langue_calc);  
+CREATE INDEX idx_clients_budget_calc ON clients_json(budget_calc);  
+CREATE INDEX idx_clients_score_calc ON clients_json(score_calc);  
 
 -- Requête optimisée avec colonnes calculées
-SELECT nom, langue_calc, budget_calc, score_calc
-FROM clients_json
-WHERE langue_calc = 'fr' AND budget_calc > 40
-ORDER BY score_calc DESC;
+SELECT nom, langue_calc, budget_calc, score_calc  
+FROM clients_json  
+WHERE langue_calc = 'fr' AND budget_calc > 40  
+ORDER BY score_calc DESC;  
 ```
 
 ## Exercices pratiques
@@ -630,9 +683,9 @@ SELECT
     nom,
     email,
     CAST(metadata ->> '$.score_fidelite' AS INTEGER) as score_fidelite
-FROM clients_json
-WHERE preferences ->> '$.notifications.email' = 'true'
-ORDER BY score_fidelite DESC;
+FROM clients_json  
+WHERE preferences ->> '$.notifications.email' = 1  -- booléen JSON `true` → 1 en SQLite  
+ORDER BY score_fidelite DESC;  
 ```
 </details>
 
@@ -659,9 +712,9 @@ SELECT
     COUNT(*) as nb_clients,
     ROUND(AVG(budget), 2) as budget_moyen,
     JSON_GROUP_ARRAY(nom) as liste_clients
-FROM categories_clients
-GROUP BY categorie
-ORDER BY nb_clients DESC, budget_moyen DESC;
+FROM categories_clients  
+GROUP BY categorie  
+ORDER BY nb_clients DESC, budget_moyen DESC;  
 ```
 </details>
 
@@ -759,8 +812,8 @@ SELECT
         WHEN score_client >= 65 OR total_articles + cout_livraison >= 100 THEN 'B (Priorité normale)'
         ELSE 'C (Priorité faible)'
     END as priorite_commerciale
-FROM analyse_commandes
-ORDER BY total_commande DESC, score_client DESC;
+FROM analyse_commandes  
+ORDER BY total_commande DESC, score_client DESC;  
 ```
 </details>
 
@@ -771,19 +824,20 @@ ORDER BY total_commande DESC, score_client DESC;
 1. **Validez toujours vos données JSON**
 ```sql
 -- ✅ BON : Valider avant insertion
-INSERT INTO clients_json (nom, preferences)
-SELECT 'Nouveau Client', JSON('{"langue": "fr", "budget_max": 50}')
-WHERE JSON_VALID('{"langue": "fr", "budget_max": 50}');
+INSERT INTO clients_json (nom, preferences)  
+SELECT 'Nouveau Client', JSON('{"langue": "fr", "budget_max": 50}')  
+WHERE JSON_VALID('{"langue": "fr", "budget_max": 50}');  
 
 -- ⚠️ Vérification en requête
-SELECT nom, preferences
-FROM clients_json
-WHERE JSON_VALID(preferences) = 1;
+SELECT nom, preferences  
+FROM clients_json  
+WHERE JSON_VALID(preferences) = 1;  
 ```
 
 2. **Structure cohérente**
-```sql
--- ✅ BON : Structure standardisée
+
+```json
+// ✅ BON : Structure standardisée
 {
   "langue": "fr",
   "notifications": {
@@ -793,36 +847,35 @@ WHERE JSON_VALID(preferences) = 1;
   "categories_preferees": ["fiction", "science"],
   "budget_max": 50
 }
-
--- ❌ ÉVITER : Structure incohérente
--- Un client avec "budget_max", un autre avec "budget_maximum"
--- Types différents pour la même propriété
 ```
 
+> ❌ **À éviter** : structure incohérente — un client avec `"budget_max"`, un autre avec `"budget_maximum"`, ou des types différents pour la même propriété.
+
 3. **Gestion des types**
+
 ```sql
 -- ✅ BON : Cast explicite pour les calculs
 SELECT
     nom,
     CAST(preferences ->> '$.budget_max' AS INTEGER) as budget
-FROM clients_json
-WHERE CAST(preferences ->> '$.budget_max' AS INTEGER) > 50;
+FROM clients_json  
+WHERE CAST(preferences ->> '$.budget_max' AS INTEGER) > 50;  
+```
 
--- ❌ PROBLÈME : Comparaison de chaînes
-WHERE preferences ->> '$.budget_max' > '50'  -- Comparaison alphabétique !
+```text
+-- ❌ PROBLÈME : Comparaison de chaînes (alphabétique, pas numérique)
+SELECT … WHERE preferences ->> '$.budget_max' > '50'  -- '5' < '50' < '6' !
 ```
 
 ### ✅ **Performance :**
 
 1. **Index sur les propriétés fréquemment utilisées**
-```sql
--- Pour les requêtes fréquentes
-CREATE INDEX idx_langue ON clients_json(JSON_EXTRACT(preferences, '$.langue'));
 
--- Ou mieux : colonne calculée
-ALTER TABLE clients_json ADD COLUMN langue_calc TEXT
-    GENERATED ALWAYS AS (JSON_EXTRACT(preferences, '$.langue')) STORED;
-CREATE INDEX idx_langue_calc ON clients_json(langue_calc);
+> ⚠️ `ALTER TABLE … ADD COLUMN … GENERATED ALWAYS AS … STORED` est interdit en SQLite — on doit utiliser **VIRTUAL** quand on ajoute une colonne via `ALTER TABLE` (`STORED` n'est possible qu'à la création de la table avec `CREATE TABLE`).
+
+```text
+-- Pour les requêtes fréquentes (la colonne `langue_calc` a été ajoutée plus haut en VIRTUAL)
+CREATE INDEX idx_langue_alt ON clients_json(JSON_EXTRACT(preferences, '$.langue'));
 ```
 
 2. **Éviter JSON_EACH dans les gros volumes**
@@ -830,10 +883,17 @@ CREATE INDEX idx_langue_calc ON clients_json(langue_calc);
 -- ⚠️ PEUT ÊTRE LENT : JSON_EACH sur gros volumes
 SELECT COUNT(*) FROM clients_json C, JSON_EACH(C.preferences, '$.categories_preferees');
 
--- ✅ MIEUX : Recherche directe quand possible
-SELECT COUNT(*) FROM clients_json
-WHERE JSON_EXTRACT(preferences, '$.categories_preferees') LIKE '%fiction%';
+-- ✅ PLUS RAPIDE mais APPROXIMATIF : recherche LIKE sur le JSON brut
+-- ⚠️ Faux positifs possibles : `%fiction%` matche aussi `"non-fiction"`,
+--    `"fictionnaire"`, etc. À réserver aux cas où l'approximation est acceptable,
+--    ou en pré-filtrage avant un contrôle exact via JSON_EACH.
+SELECT COUNT(*) FROM clients_json  
+WHERE JSON_EXTRACT(preferences, '$.categories_preferees') LIKE '%"fiction"%';  
 ```
+
+> 💡 Pour une **recherche exacte** sans faux positifs, garder `JSON_EACH` et  
+>    ajouter un index sur une colonne calculée si nécessaire (voir section  
+>    « Index et performance avec JSON » plus haut).
 
 ### ✅ **Maintenance :**
 
@@ -876,16 +936,16 @@ FROM clients_json;
 
 ```sql
 -- Ajouter une propriété à tous les clients existants
-UPDATE clients_json
-SET preferences = JSON_SET(
+UPDATE clients_json  
+SET preferences = JSON_SET(  
     preferences,
     '$.date_derniere_maj', DATE('now'),
     '$.version_schema', 2
 );
 
 -- Ajouter avec valeur par défaut conditionnelle
-UPDATE clients_json
-SET preferences = JSON_SET(
+UPDATE clients_json  
+SET preferences = JSON_SET(  
     preferences,
     '$.preferences_marketing',
     JSON_OBJECT(
@@ -914,8 +974,8 @@ WITH migration AS (
     FROM clients_json
     WHERE JSON_EXTRACT(preferences, '$.old_property') IS NOT NULL
 )
-UPDATE clients_json
-SET preferences = JSON_SET(
+UPDATE clients_json  
+SET preferences = JSON_SET(  
     (SELECT prefs_cleaned FROM migration WHERE migration.id = clients_json.id),
     '$.new_location.new_property',
     (SELECT old_value FROM migration WHERE migration.id = clients_json.id)
@@ -971,8 +1031,8 @@ SELECT
     CAST(config ->> '$.limites.min_commande' AS REAL) as min_commande,
     CAST(config ->> '$.limites.max_commande' AS REAL) as max_commande,
     config -> '$.frais' as frais_par_methode
-FROM app_config
-WHERE module = 'paiement' AND actif = 1;
+FROM app_config  
+WHERE module = 'paiement' AND actif = 1;  
 ```
 
 ### 2. Système de logs JSON
@@ -1027,11 +1087,11 @@ SELECT
     JSON_GROUP_ARRAY(contexte ->> '$.raison') as raisons,
     MIN(timestamp) as premiere_occurrence,
     MAX(timestamp) as derniere_occurrence
-FROM logs_evenements
-WHERE niveau IN ('WARN', 'ERROR')
-AND timestamp >= DATE('now', '-7 days')
-GROUP BY niveau, module
-ORDER BY nb_occurrences DESC;
+FROM logs_evenements  
+WHERE niveau IN ('WARN', 'ERROR')  
+AND timestamp >= DATE('now', '-7 days')  
+GROUP BY niveau, module  
+ORDER BY nb_occurrences DESC;  
 
 -- Analyse détaillée des paiements échoués
 SELECT
@@ -1040,12 +1100,12 @@ SELECT
     JSON_GROUP_ARRAY(DISTINCT contexte ->> '$.raison') as raisons_echec,
     AVG(CAST(contexte ->> '$.montant' AS REAL)) as montant_moyen_echec,
     SUM(CAST(contexte ->> '$.montant' AS REAL)) as perte_ca_estimee
-FROM logs_evenements
-WHERE module = 'paiement'
-AND niveau = 'WARN'
-AND message LIKE '%échouée%'
-GROUP BY DATE(timestamp)
-ORDER BY jour DESC;
+FROM logs_evenements  
+WHERE module = 'paiement'  
+AND niveau = 'WARN'  
+AND message LIKE '%échouée%'  
+GROUP BY DATE(timestamp)  
+ORDER BY jour DESC;  
 ```
 
 ### 3. Système de paramétrage utilisateur avancé
@@ -1091,12 +1151,17 @@ INSERT INTO parametres_utilisateur VALUES
 }'), CURRENT_TIMESTAMP);
 
 -- Requête pour personnaliser l'expérience utilisateur
+-- ⚠️ `CAST(… AS BOOLEAN)` est un NO-OP en SQLite : aucun type BOOLEAN strict n'existe,
+--    le CAST applique l'affinité NUMERIC et retourne directement l'INTEGER (1/0).
+--    Comme `->>` retourne déjà 1/0 pour les booléens JSON, ce CAST est **purement
+--    documentaire** — il signale l'intention « cette colonne est un booléen » au lecteur.
+--    À utiliser comme convention de lecture, pas comme conversion réelle.
 SELECT
     utilisateur_id,
     -- Paramètres d'interface
     parametres ->> '$.interface.theme' as theme,
     parametres ->> '$.interface.langue' as langue,
-    CAST(parametres ->> '$.interface.notifications_desktop' AS BOOLEAN) as notif_desktop,
+    CAST(parametres ->> '$.interface.notifications_desktop' AS BOOLEAN) as notif_desktop,  -- intention : booléen
 
     -- Paramètres shopping
     parametres ->> '$.shopping.tri_defaut' as tri_prefere,
@@ -1104,8 +1169,8 @@ SELECT
     JSON_ARRAY_LENGTH(parametres, '$.shopping.filtres_sauvegardes') as nb_filtres_sauvegardes,
 
     -- Préférences privacy
-    CAST(parametres ->> '$.privacy.partage_donnees' AS BOOLEAN) as accepte_partage,
-    CAST(parametres ->> '$.privacy.newsletter' AS BOOLEAN) as accepte_newsletter,
+    CAST(parametres ->> '$.privacy.partage_donnees' AS BOOLEAN) as accepte_partage,    -- intention : booléen
+    CAST(parametres ->> '$.privacy.newsletter' AS BOOLEAN) as accepte_newsletter,      -- intention : booléen
 
     -- Configuration paiement
     parametres ->> '$.paiement.methode_preferee' as methode_paiement_pref,
@@ -1120,20 +1185,21 @@ SELECT
 FROM parametres_utilisateur;
 
 -- Mise à jour intelligente des paramètres
-UPDATE parametres_utilisateur
-SET parametres = JSON_SET(
+-- Ici, on conserve uniquement les 3 dernières recherches (1 nouvelle + 2 anciennes)
+-- pour rester lisible. Pour en garder davantage, ajouter d'autres lignes
+-- `JSON_EXTRACT(... '[3]')`, `'[4]'`, etc.
+UPDATE parametres_utilisateur  
+SET parametres = JSON_SET(  
     parametres,
     '$.shopping.historique_recherches',
     JSON_ARRAY(
-        -- Garder les 10 dernières recherches
+        'nouvelle_recherche',  -- La nouvelle recherche en tête de liste
         COALESCE(JSON_EXTRACT(parametres, '$.shopping.historique_recherches[0]'), ''),
-        COALESCE(JSON_EXTRACT(parametres, '$.shopping.historique_recherches[1]'), ''),
-        COALESCE(JSON_EXTRACT(parametres, '$.shopping.historique_recherches[2]'), ''),
-        'nouvelle_recherche'  -- Ajouter la nouvelle recherche
+        COALESCE(JSON_EXTRACT(parametres, '$.shopping.historique_recherches[1]'), '')
     )
 ),
-derniere_maj = CURRENT_TIMESTAMP
-WHERE utilisateur_id = 1;
+derniere_maj = CURRENT_TIMESTAMP  
+WHERE utilisateur_id = 1;  
 ```
 
 ## Résumé
@@ -1184,6 +1250,5 @@ Ce chapitre 4 sur les **requêtes avancées et l'optimisation** vous a maintenan
 
 Vous êtes maintenant équipé pour créer des solutions SQL avancées et performantes !
 
-
-⏭️
+⏭️ [Module 5 : Optimisation des performances](/05-optimisation-performances/README.md)
 

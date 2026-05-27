@@ -14,9 +14,10 @@ Une **sous-requête** (ou requête imbriquée) est une requête SQL placée à l
 
 ```sql
 -- Trouver tous les livres plus chers que le prix moyen
-SELECT titre, prix
-FROM livres
-WHERE prix > (SELECT AVG(prix) FROM livres);
+-- (exemple illustratif — la table `livres` sera créée plus bas)
+SELECT titre, prix  
+FROM livres  
+WHERE prix > (SELECT AVG(prix) FROM livres);  
 ```
 
 Dans cet exemple, `(SELECT AVG(prix) FROM livres)` est la sous-requête qui calcule le prix moyen.
@@ -67,20 +68,21 @@ INSERT INTO livres VALUES
 
 **Exemple 1 : Livres plus chers que la moyenne**
 ```sql
-SELECT titre, prix
-FROM livres
-WHERE prix > (
+SELECT titre, prix  
+FROM livres  
+WHERE prix > (  
     SELECT AVG(prix)
     FROM livres
 );
 ```
-*Résultat : Ça (18.99€) et Shining (16.75€)*
+*Prix moyen = (15.99 + 12.50 + 18.99 + 16.75 + 14.99) / 5 = **15.844***
+*Résultat : Ça (18.99 €), Shining (16.75 €) et Les Misérables (15.99 €)*
 
 **Exemple 2 : Livres des auteurs français**
 ```sql
-SELECT titre, prix
-FROM livres
-WHERE auteur_id IN (
+SELECT titre, prix  
+FROM livres  
+WHERE auteur_id IN (  
     SELECT id
     FROM auteurs
     WHERE pays = 'France'
@@ -120,9 +122,9 @@ INSERT INTO commandes VALUES
 
 **Exemple 1 : Livres qui ont été commandés**
 ```sql
-SELECT titre, prix
-FROM livres L
-WHERE EXISTS (
+SELECT titre, prix  
+FROM livres L  
+WHERE EXISTS (  
     SELECT 1
     FROM commandes C
     WHERE C.livre_id = L.id  -- Référence à la table externe !
@@ -132,9 +134,9 @@ WHERE EXISTS (
 
 **Exemple 2 : Auteurs avec le livre le plus cher par auteur**
 ```sql
-SELECT nom
-FROM auteurs A
-WHERE EXISTS (
+SELECT nom  
+FROM auteurs A  
+WHERE EXISTS (  
     SELECT 1
     FROM livres L
     WHERE L.auteur_id = A.id
@@ -177,16 +179,16 @@ SELECT titre FROM livres L WHERE EXISTS (SELECT 1 FROM commandes WHERE livre_id 
 ### 1. **IN / NOT IN**
 ```sql
 -- Livres des auteurs américains
-SELECT titre
-FROM livres
-WHERE auteur_id IN (
+SELECT titre  
+FROM livres  
+WHERE auteur_id IN (  
     SELECT id FROM auteurs WHERE pays = 'USA'
 );
 
 -- Livres qui ne sont PAS des auteurs français
-SELECT titre
-FROM livres
-WHERE auteur_id NOT IN (
+SELECT titre  
+FROM livres  
+WHERE auteur_id NOT IN (  
     SELECT id FROM auteurs WHERE pays = 'France'
 );
 ```
@@ -194,41 +196,57 @@ WHERE auteur_id NOT IN (
 ### 2. **EXISTS / NOT EXISTS**
 ```sql
 -- Auteurs qui ont publié des livres
-SELECT nom
-FROM auteurs A
-WHERE EXISTS (
+SELECT nom  
+FROM auteurs A  
+WHERE EXISTS (  
     SELECT 1 FROM livres L WHERE L.auteur_id = A.id
 );
 
 -- Livres jamais commandés
-SELECT titre
-FROM livres L
-WHERE NOT EXISTS (
+SELECT titre  
+FROM livres L  
+WHERE NOT EXISTS (  
     SELECT 1 FROM commandes C WHERE C.livre_id = L.id
 );
 ```
 
 ### 3. **Comparateurs avec sous-requêtes**
+
+> ⚠️ **Spécificité SQLite** : SQLite ne supporte **pas** les quantificateurs `ALL` et `ANY` / `SOME` du SQL standard (la requête `WHERE x > ALL (…)` produit `Parse error: near "ALL"`). On les remplace par les agrégats `MAX`/`MIN` :  
+>  
+> | SQL standard | Équivalent SQLite |  
+> |---|---|  
+> | `x > ALL (SELECT y FROM t)` | `x > (SELECT MAX(y) FROM t)` |  
+> | `x < ALL (SELECT y FROM t)` | `x < (SELECT MIN(y) FROM t)` |  
+> | `x > ANY (SELECT y FROM t)` | `x > (SELECT MIN(y) FROM t)` |  
+> | `x < ANY (SELECT y FROM t)` | `x < (SELECT MAX(y) FROM t)` |  
+> | `x = ANY (SELECT y FROM t)` | `x IN (SELECT y FROM t)` |  
+> | `x <> ALL (SELECT y FROM t)` | `x NOT IN (SELECT y FROM t)` |
+
 ```sql
 -- Livre le plus cher
-SELECT titre, prix
-FROM livres
-WHERE prix = (SELECT MAX(prix) FROM livres);
+SELECT titre, prix  
+FROM livres  
+WHERE prix = (SELECT MAX(prix) FROM livres);  
 
--- Livres plus chers que tous les livres de Victor Hugo
-SELECT titre, prix
-FROM livres
-WHERE prix > ALL (
-    SELECT prix FROM livres L
+-- Livres plus chers que TOUS les livres de Victor Hugo
+-- (équivalent SQLite de "> ALL (…)" : on compare au maximum)
+SELECT titre, prix  
+FROM livres  
+WHERE prix > (  
+    SELECT MAX(L.prix)
+    FROM livres L
     JOIN auteurs A ON L.auteur_id = A.id
     WHERE A.nom = 'Victor Hugo'
 );
 
--- Livres plus chers qu'au moins un livre de Stephen King
-SELECT titre, prix
-FROM livres
-WHERE prix > ANY (
-    SELECT prix FROM livres L
+-- Livres plus chers qu'AU MOINS UN livre de Stephen King
+-- (équivalent SQLite de "> ANY (…)" : on compare au minimum)
+SELECT titre, prix  
+FROM livres  
+WHERE prix > (  
+    SELECT MIN(L.prix)
+    FROM livres L
     JOIN auteurs A ON L.auteur_id = A.id
     WHERE A.nom = 'Stephen King'
 );
@@ -270,10 +288,10 @@ GROUP BY pays;
 SELECT
     A.nom,
     AVG(L.prix) as prix_moyen
-FROM auteurs A
-JOIN livres L ON A.id = L.auteur_id
-GROUP BY A.id, A.nom
-HAVING AVG(L.prix) > (
+FROM auteurs A  
+JOIN livres L ON A.id = L.auteur_id  
+GROUP BY A.id, A.nom  
+HAVING AVG(L.prix) > (  
     SELECT AVG(prix) FROM livres
 );
 ```
@@ -286,10 +304,10 @@ HAVING AVG(L.prix) > (
 SELECT
     client_id,
     SUM(L.prix * C.quantite) as total_depense
-FROM commandes C
-JOIN livres L ON C.livre_id = L.id
-GROUP BY client_id
-HAVING SUM(L.prix * C.quantite) > (
+FROM commandes C  
+JOIN livres L ON C.livre_id = L.id  
+GROUP BY client_id  
+HAVING SUM(L.prix * C.quantite) > (  
     SELECT AVG(total_par_client)
     FROM (
         SELECT SUM(L2.prix * C2.quantite) as total_par_client
@@ -303,10 +321,10 @@ HAVING SUM(L.prix * C.quantite) > (
 ### Exemple 2 : Gestion des stocks
 ```sql
 -- Livres avec un stock inférieur à la moyenne ET qui ont des commandes
-SELECT titre, stock
-FROM livres L
-WHERE stock < (SELECT AVG(stock) FROM livres)
-AND EXISTS (
+SELECT titre, stock  
+FROM livres L  
+WHERE stock < (SELECT AVG(stock) FROM livres)  
+AND EXISTS (  
     SELECT 1 FROM commandes C WHERE C.livre_id = L.id
 );
 ```
@@ -314,36 +332,50 @@ AND EXISTS (
 ## Pièges à éviter
 
 ### 1. **Attention avec NULL et NOT IN**
+
+Si la sous-requête de `NOT IN` retourne **au moins une valeur NULL**, la requête extérieure retourne **0 ligne** (sémantique tri-valuée : `x NOT IN (1, NULL)` → `UNKNOWN`, traité comme faux).
+
 ```sql
--- ❌ PROBLÈME : Si un auteur a un pays NULL, cette requête ne retournera RIEN
-SELECT titre
-FROM livres
-WHERE auteur_id NOT IN (
-    SELECT id FROM auteurs WHERE pays = 'France'  -- Si un id est NULL...
+-- ❌ PIÈGE : la sous-requête peut retourner NULL si la colonne accepte NULL
+-- (ici `auteur_id` dans `livres` est nullable)
+SELECT titre  
+FROM livres  
+WHERE auteur_id NOT IN (  
+    SELECT auteur_id FROM livres WHERE prix < 10
+);
+-- → Si un livre à prix < 10 a auteur_id = NULL, la sous-requête contient NULL
+--   et la requête retourne 0 ligne, même pour les livres dont l'auteur n'est
+--   pas dans la liste.
+
+-- ✅ SOLUTION 1 : filtrer les NULL dans la sous-requête
+SELECT titre  
+FROM livres  
+WHERE auteur_id NOT IN (  
+    SELECT auteur_id FROM livres WHERE prix < 10 AND auteur_id IS NOT NULL
 );
 
--- ✅ SOLUTION : Gérer les NULL explicitement
-SELECT titre
-FROM livres
-WHERE auteur_id NOT IN (
-    SELECT id FROM auteurs WHERE pays = 'France' AND id IS NOT NULL
+-- ✅ SOLUTION 2 (préférée) : utiliser NOT EXISTS qui gère bien les NULL
+SELECT L1.titre  
+FROM livres L1  
+WHERE NOT EXISTS (  
+    SELECT 1 FROM livres L2 WHERE L2.auteur_id = L1.auteur_id AND L2.prix < 10
 );
 ```
 
 ### 2. **Performance des sous-requêtes corrélées**
 ```sql
 -- ❌ LENT : Sous-requête corrélée qui peut être évitée
-SELECT titre
-FROM livres L
-WHERE EXISTS (
+SELECT titre  
+FROM livres L  
+WHERE EXISTS (  
     SELECT 1 FROM auteurs A WHERE A.id = L.auteur_id AND A.pays = 'France'
 );
 
 -- ✅ PLUS RAPIDE : Utiliser une jointure
-SELECT L.titre
-FROM livres L
-JOIN auteurs A ON L.auteur_id = A.id
-WHERE A.pays = 'France';
+SELECT L.titre  
+FROM livres L  
+JOIN auteurs A ON L.auteur_id = A.id  
+WHERE A.pays = 'France';  
 ```
 
 ## Quand utiliser chaque type ?
@@ -367,9 +399,9 @@ Trouvez tous les livres dont le prix est supérieur au prix du livre le plus che
 <summary>Solution</summary>
 
 ```sql
-SELECT titre, prix
-FROM livres
-WHERE prix > (
+SELECT titre, prix  
+FROM livres  
+WHERE prix > (  
     SELECT MAX(L.prix)
     FROM livres L
     JOIN auteurs A ON L.auteur_id = A.id
@@ -385,9 +417,9 @@ Trouvez les auteurs qui ont écrit au moins un livre plus cher que 15€.
 <summary>Solution</summary>
 
 ```sql
-SELECT DISTINCT nom
-FROM auteurs A
-WHERE EXISTS (
+SELECT DISTINCT nom  
+FROM auteurs A  
+WHERE EXISTS (  
     SELECT 1
     FROM livres L
     WHERE L.auteur_id = A.id
@@ -430,5 +462,4 @@ Les sous-requêtes sont un outil puissant qui vous permet de :
 
 Dans la prochaine section, nous découvrirons les **Expressions de Table Communes (CTE)**, qui offrent une alternative plus lisible et parfois plus performante aux sous-requêtes complexes !
 
-
-⏭️
+⏭️ [4.2 Expressions de table communes (CTE) et requêtes récursives](/04-requetes-avancees-optimisation/02-expressions-table-communes-cte-requetes-recursives.md)

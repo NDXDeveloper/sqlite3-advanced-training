@@ -20,6 +20,15 @@ Dans le monde réel, les besoins en matière de données dépassent rapidement l
 
 Ce chapitre couvre six domaines clés qui transformeront votre approche de SQLite :
 
+| # | Section | Sujet principal | Lien |
+|--:|---------|-----------------|------|
+| 4.1 | **Sous-requêtes** | corrélées vs non-corrélées, `EXISTS`, `IN`, équivalents SQLite de `ANY/ALL` | [→ 4.1](/04-requetes-avancees-optimisation/01-sous-requetes-correlees-non-correlees.md) |
+| 4.2 | **CTE & récursion** | `WITH`, `WITH RECURSIVE`, hiérarchies | [→ 4.2](/04-requetes-avancees-optimisation/02-expressions-table-communes-cte-requetes-recursives.md) |
+| 4.3 | **Window functions** | `OVER`, `PARTITION BY`, `ROW_NUMBER`, `LAG`, `LEAD` | [→ 4.3](/04-requetes-avancees-optimisation/03-fonctions-fenetrage-window-functions.md) |
+| 4.4 | **REGEXP** | pattern matching, validation de données | [→ 4.4](/04-requetes-avancees-optimisation/04-expressions-regulieres-regexp.md) |
+| 4.5 | **CASE / COALESCE / NULLIF** | logique conditionnelle, gestion des `NULL` | [→ 4.5](/04-requetes-avancees-optimisation/05-requetes-complexes-case-coalesce-nullif.md) |
+| 4.6 | **JSON** | `json_extract`, `->`, `->>`, JSONB | [→ 4.6](/04-requetes-avancees-optimisation/06-interrogation-manipulation-donnees-json.md) |
+
 ### 🎯 **Sous-requêtes et corrélations**
 Apprenez à décomposer des problèmes complexes en requêtes imbriquées intelligentes. Nous explorerons la différence entre sous-requêtes corrélées et non-corrélées, leurs cas d'usage optimaux, et comment éviter les pièges de performance.
 
@@ -42,9 +51,9 @@ Explorez les capacités JSON native de SQLite pour stocker et interroger des don
 
 Avant de commencer ce chapitre, assurez-vous de maîtriser :
 
-- Les jointures de base (INNER, LEFT, RIGHT, FULL OUTER)
-- Les fonctions d'agrégation (COUNT, SUM, AVG, MIN, MAX)
-- Les clauses GROUP BY et HAVING
+- Les jointures de base : `INNER`, `LEFT` (`RIGHT` et `FULL OUTER` ne sont disponibles que **depuis SQLite 3.39**)
+- Les fonctions d'agrégation (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`)
+- Les clauses `GROUP BY` et `HAVING`
 - La création et modification de tables
 
 ## Approche pédagogique
@@ -59,18 +68,18 @@ Chaque section de ce chapitre suivra une approche structurée :
 
 ## Base de données d'exemple
 
-Tout au long de ce chapitre, nous utiliserons une base de données d'exemple représentant un système de gestion d'une librairie en ligne :
+Tout au long de ce chapitre, nous utiliserons une base de données d'exemple représentant un système de gestion d'une **librairie en ligne**. Les tables sont nommées **en français** dans tous les chapitres pour rester cohérent avec le reste de la formation :
 
-```sql
--- Tables principales que nous utiliserons :
--- - customers (clients)
--- - books (livres)
--- - authors (auteurs)
--- - orders (commandes)
--- - order_items (articles commandés)
--- - reviews (avis clients)
--- - categories (catégories de livres)
+```text
+Tables principales du fil rouge :
+- clients      (clients de la librairie)
+- livres       (catalogue de livres)
+- auteurs      (auteurs des livres)
+- categories   (catégories de livres, hiérarchiques)
+- commandes    (commandes passées par les clients)
 ```
+
+Ces tables sont créées et peuplées dans le chapitre **4.2 (CTE)**, qui sert de base commune aux chapitres **4.3 → 4.5**. Le chapitre **4.6 (JSON)** utilise des tables dédiées avec suffixe `_json` (autonomes).
 
 Cette base de données nous permettra d'explorer des scénarios réalistes comme l'analyse des ventes, le calcul de recommandations, ou l'évaluation de la performance des auteurs.
 
@@ -99,6 +108,6 @@ Préparez-vous à découvrir la vraie puissance de SQLite et à développer des 
 
 ---
 
-**Prochaine section** : [4.1 Sous-requêtes corrélées et non-corrélées]()
+**Prochaine section** : [4.1 Sous-requêtes corrélées et non-corrélées](/04-requetes-avancees-optimisation/01-sous-requetes-correlees-non-correlees.md)
 
-⏭️
+⏭️ [4.1 Sous-requêtes corrélées et non-corrélées](/04-requetes-avancees-optimisation/01-sous-requetes-correlees-non-correlees.md)
