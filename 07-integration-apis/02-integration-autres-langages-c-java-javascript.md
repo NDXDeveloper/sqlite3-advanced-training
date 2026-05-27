@@ -51,7 +51,7 @@ Créez un fichier `exemple_sqlite.c` :
 #include <sqlite3.h>
 #include <stdlib.h>
 
-int main() {
+int main(void) {
     sqlite3 *db;
     int resultat;
 
@@ -59,11 +59,13 @@ int main() {
     resultat = sqlite3_open("exemple.db", &db);
 
     if (resultat != SQLITE_OK) {
-        printf("Erreur lors de l'ouverture : %s\n", sqlite3_errmsg(db));
+        fprintf(stderr, "Erreur lors de l'ouverture : %s\n", sqlite3_errmsg(db));
+        sqlite3_close(db);  // ⚠️ libérer même en cas d'échec
         return 1;
     }
 
-    printf("Base de données ouverte avec succès !\n");
+    printf("Base de données ouverte avec succès ! (SQLite %s)\n",
+           sqlite3_libversion());
 
     // Fermer la base de données
     sqlite3_close(db);
@@ -71,10 +73,21 @@ int main() {
 }
 ```
 
-**Compilation** :
+**Compilation et exécution** :
 ```bash
-gcc -o exemple_sqlite exemple_sqlite.c -lsqlite3
+# Avec gcc : -lsqlite3 lie la bibliothèque SQLite installée
+gcc -Wall -O2 -o exemple_sqlite exemple_sqlite.c -lsqlite3
+
+# Lancement
+./exemple_sqlite
+# → Base de données ouverte avec succès ! (SQLite 3.45.1)
 ```
+
+> 💡 **Bonnes pratiques de compilation** :  
+> - `-Wall` : active tous les avertissements du compilateur.  
+> - `-O2` : optimisations standard (équilibre vitesse/taille binaire).  
+> - Sur **Windows avec MSVC**, lier avec `sqlite3.lib` et inclure `sqlite3.h` ; ou utiliser **vcpkg** : `vcpkg install sqlite3`.  
+> - Sur **macOS** avec Xcode CLI : `clang -o exemple exemple.c -lsqlite3` (la même flag fonctionne).
 
 ### Créer une table et insérer des données
 
@@ -103,6 +116,9 @@ int main() {
     resultat = sqlite3_open("personnes.db", &db);
     if (resultat != SQLITE_OK) {
         printf("Erreur : %s\n", sqlite3_errmsg(db));
+        // ⚠️ sqlite3_open() alloue le handle MÊME en cas d'échec ;
+        //    on doit appeler sqlite3_close() pour libérer la mémoire.
+        sqlite3_close(db);
         return 1;
     }
 
@@ -117,6 +133,7 @@ int main() {
     if (resultat != SQLITE_OK) {
         printf("Erreur SQL : %s\n", errMsg);
         sqlite3_free(errMsg);
+        sqlite3_close(db);  // ne pas oublier de fermer avant de quitter
         return 1;
     }
     printf("Table créée avec succès !\n");
@@ -196,11 +213,68 @@ int main() {
         ajouter_personne(db, "David Moreau", 35);
         ajouter_personne(db, "Emma Leroy", 27);
         sqlite3_close(db);
+    } else {
+        fprintf(stderr, "Erreur ouverture : %s\n", sqlite3_errmsg(db));
+        sqlite3_close(db);  // libération même en cas d'échec (cf. note ci-dessus)
+        return 1;
     }
 
     return 0;
 }
 ```
+
+> ⚠️ **PIÈGE FRÉQUENT en C — `SQLITE_STATIC` vs `SQLITE_TRANSIENT`** : le 5ᵉ argument de `sqlite3_bind_text(stmt, idx, ptr, n, destructor)` indique à SQLite **comment traiter la mémoire pointée par `ptr`** :  
+>  
+> - **`SQLITE_STATIC`** : SQLite suppose que `ptr` reste valide **jusqu'à `sqlite3_step()` inclus**. À utiliser **seulement** pour des littéraux (`"texte"`) ou des buffers globaux/statiques. Si vous passez un pointeur vers une variable locale ou un buffer libéré avant `sqlite3_step`, vous obtenez un comportement indéfini (lecture mémoire libérée → données corrompues, crash).  
+> - **`SQLITE_TRANSIENT`** : SQLite **copie** immédiatement les données dans son propre buffer. Sûr partout, mais alloue de la mémoire. **Choix par défaut quand vous n'êtes pas certain.**  
+>  
+> Dans l'exemple ci-dessus, `nom` est valide jusqu'à `sqlite3_finalize`, donc `SQLITE_STATIC` est correct. Mais si `nom` était une variable locale d'une fonction qui retourne avant `sqlite3_step`, ce serait un bug.
+
+#### Réutiliser un statement préparé en boucle (`sqlite3_reset`)
+
+Pour insérer N lignes en série, il est inutile (et coûteux) de préparer N fois la même requête. Préparez **une fois**, puis utilisez `sqlite3_reset` entre chaque exécution :
+
+```c
+sqlite3_stmt *stmt;  
+const char *sql = "INSERT INTO personnes (nom, age) VALUES (?, ?);";  
+if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {  
+    fprintf(stderr, "prepare: %s\n", sqlite3_errmsg(db));
+    return -1;
+}
+
+// Démarrer une transaction pour 10× plus de perf
+// BEGIN IMMEDIATE acquiert le verrou d'écriture tout de suite, évitant les
+// erreurs SQLITE_BUSY différées si un autre writer arrive entre-temps.
+if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+    fprintf(stderr, "BEGIN: %s\n", sqlite3_errmsg(db));
+    sqlite3_finalize(stmt);
+    return -1;
+}
+
+const char *noms[] = {"Alice", "Bob", "Claire"};  
+int ages[] = {25, 30, 28};  
+
+for (int i = 0; i < 3; i++) {
+    sqlite3_bind_text(stmt, 1, noms[i], -1, SQLITE_TRANSIENT);  // copie sûre
+    sqlite3_bind_int(stmt, 2, ages[i]);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        fprintf(stderr, "step: %s\n", sqlite3_errmsg(db));
+        // En cas d'erreur partielle, ROLLBACK pour cohérence transactionnelle :
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    sqlite3_reset(stmt);          // ⚠️ rembobine le statement pour la prochaine exécution
+    sqlite3_clear_bindings(stmt); // (optionnel) efface les bindings précédents
+}
+
+sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);  
+sqlite3_finalize(stmt);  
+```
+
+> 💡 **Performance** : pour insérer 10 000 lignes, la combinaison `BEGIN/COMMIT` + statement réutilisé est **typiquement 100× plus rapide** que des INSERT autonomes (chacun produit un fsync). Voir le chapitre 3.4 sur l'optimisation.
 
 ## SQLite avec Java
 
@@ -224,15 +298,16 @@ Java offre une approche orientée objet plus familière pour beaucoup de dévelo
     <version>1.0.0</version>
 
     <properties>
-        <maven.compiler.source>11</maven.compiler.source>
-        <maven.compiler.target>11</maven.compiler.target>
+        <!-- Java 17 LTS minimum recommandé (Java 21 LTS encore mieux) -->
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
     </properties>
 
     <dependencies>
         <dependency>
             <groupId>org.xerial</groupId>
             <artifactId>sqlite-jdbc</artifactId>
-            <version>3.43.0.0</version>
+            <version>3.49.1.0</version>
         </dependency>
     </dependencies>
 </project>
@@ -242,9 +317,11 @@ Java offre une approche orientée objet plus familière pour beaucoup de dévelo
 
 ```gradle
 dependencies {
-    implementation 'org.xerial:sqlite-jdbc:3.43.0.0'
+    implementation 'org.xerial:sqlite-jdbc:3.49.1.0'
 }
 ```
+
+> 💡 **Versions** : le driver `sqlite-jdbc` est versionné en suivant SQLite (`3.49.1.0` embarque SQLite 3.49.1). Vérifiez la dernière version sur [Maven Central](https://central.sonatype.com/artifact/org.xerial/sqlite-jdbc) ; Java **17 ou plus récent** est recommandé en 2026 (Java 21 LTS si possible).
 
 ### Premier programme Java
 
@@ -275,9 +352,9 @@ public class SQLiteExample {
 ### Classe complète pour gérer les personnes
 
 ```java
-import java.sql.*;
-import java.util.ArrayList;
-import java.util.List;
+import java.sql.*;  
+import java.util.ArrayList;  
+import java.util.List;  
 
 public class GestionnairePersonnes {
     private static final String DB_URL = "jdbc:sqlite:personnes.db";
@@ -304,24 +381,34 @@ public class GestionnairePersonnes {
         }
     }
 
-    // Ajouter une personne
-    public static boolean ajouterPersonne(String nom, int age, String email) {
-        String sql = "INSERT INTO personnes(nom, age, email) VALUES(?, ?, ?)";
+    // Ajouter une personne (et récupérer l'ID auto-incrémenté généré)
+    public static int ajouterPersonne(String nom, int age, String email) {
+        String sql = "INSERT INTO personnes(nom, age, email) VALUES (?, ?, ?)";
 
         try (Connection conn = DriverManager.getConnection(DB_URL);
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+             PreparedStatement pstmt = conn.prepareStatement(
+                     sql, Statement.RETURN_GENERATED_KEYS)) {
 
             pstmt.setString(1, nom);
             pstmt.setInt(2, age);
             pstmt.setString(3, email);
 
             int lignesAffectees = pstmt.executeUpdate();
-            System.out.println("✅ " + nom + " ajouté(e) avec succès !");
-            return lignesAffectees > 0;
+            if (lignesAffectees == 0) return -1;
+
+            // Récupérer la clé générée (équivalent de lastrowid)
+            try (ResultSet keys = pstmt.getGeneratedKeys()) {
+                if (keys.next()) {
+                    int id = keys.getInt(1);
+                    System.out.println("✅ " + nom + " ajouté(e), ID = " + id);
+                    return id;
+                }
+            }
+            return -1;
 
         } catch (SQLException e) {
             System.err.println("❌ Erreur ajout : " + e.getMessage());
-            return false;
+            return -1;
         }
     }
 
@@ -442,22 +529,22 @@ public static void exempleTransaction() {
 
         try {
             // Première opération
-            PreparedStatement stmt1 = conn.prepareStatement(
-                "INSERT INTO personnes (nom, age, email) VALUES (?, ?, ?)"
-            );
-            stmt1.setString(1, "Transaction Test 1");
-            stmt1.setInt(2, 35);
-            stmt1.setString(3, "test1@email.com");
-            stmt1.executeUpdate();
+            try (PreparedStatement stmt1 = conn.prepareStatement(
+                    "INSERT INTO personnes (nom, age, email) VALUES (?, ?, ?)")) {
+                stmt1.setString(1, "Transaction Test 1");
+                stmt1.setInt(2, 35);
+                stmt1.setString(3, "test1@email.com");
+                stmt1.executeUpdate();
+            }
 
             // Deuxième opération
-            PreparedStatement stmt2 = conn.prepareStatement(
-                "INSERT INTO personnes (nom, age, email) VALUES (?, ?, ?)"
-            );
-            stmt2.setString(1, "Transaction Test 2");
-            stmt2.setInt(2, 40);
-            stmt2.setString(3, "test2@email.com");
-            stmt2.executeUpdate();
+            try (PreparedStatement stmt2 = conn.prepareStatement(
+                    "INSERT INTO personnes (nom, age, email) VALUES (?, ?, ?)")) {
+                stmt2.setString(1, "Transaction Test 2");
+                stmt2.setInt(2, 40);
+                stmt2.setString(3, "test2@email.com");
+                stmt2.executeUpdate();
+            }
 
             // Confirmer toutes les opérations
             conn.commit();
@@ -478,6 +565,10 @@ public static void exempleTransaction() {
 }
 ```
 
+> ⚠️ **Piège JDBC** : par défaut, JDBC est en mode **auto-commit `true`** — chaque `executeUpdate()` est sa propre mini-transaction. Pour grouper N opérations, il **faut** appeler `conn.setAutoCommit(false)` au début, puis `conn.commit()` à la fin. Oublier le `commit()` final, c'est perdre toutes les écritures (rollback implicite à la fermeture de connexion).  
+>  
+> 💡 **Bonne pratique** : encapsulez les `PreparedStatement` dans des `try-with-resources` imbriqués (comme ci-dessus) pour garantir leur fermeture même en cas d'exception — sinon vous risquez des fuites de statements.
+
 ## SQLite avec JavaScript
 
 ### JavaScript côté serveur (Node.js)
@@ -485,8 +576,8 @@ public static void exempleTransaction() {
 #### Installation des dépendances
 
 ```bash
-npm init -y
-npm install sqlite3
+npm init -y  
+npm install sqlite3  
 # ou pour une version plus moderne :
 npm install better-sqlite3
 ```
@@ -494,12 +585,12 @@ npm install better-sqlite3
 ### Exemple avec sqlite3 (approche callback)
 
 ```javascript
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const sqlite3 = require('sqlite3').verbose();  
+const path = require('path');  
 
 // Créer ou ouvrir une base de données
-const dbPath = path.join(__dirname, 'personnes.db');
-const db = new sqlite3.Database(dbPath, (err) => {
+const dbPath = path.join(__dirname, 'personnes.db');  
+const db = new sqlite3.Database(dbPath, (err) => {  
     if (err) {
         console.error('Erreur ouverture :', err.message);
     } else {
@@ -605,12 +696,26 @@ setTimeout(() => {
 
 ### Exemple avec better-sqlite3 (approche synchrone)
 
+> 💡 **Pourquoi synchrone ?** SQLite étant un moteur en-process (et non un serveur réseau), les opérations sont **CPU/disque** et non I/O réseau — le coût d'un *callback* asynchrone est plus élevé que l'opération elle-même pour 95 % des requêtes. `better-sqlite3` choisit donc une API bloquante : **plus simple et 2–5× plus rapide** que `node-sqlite3`.  
+>  
+> ⚠️ **Attention au blocage de l'event loop** : un `SELECT` qui scanne 1 M de lignes bloque Node.js pendant son exécution → les autres requêtes HTTP du même process restent en attente. Pour ces cas-là, utilisez un Worker thread dédié ou déportez la requête côté serveur.
+
 ```javascript
 const Database = require('better-sqlite3');
 
 class GestionnairePersonnes {
     constructor(fichierDB = 'personnes.db') {
         this.db = new Database(fichierDB);
+
+        // PRAGMA conseillés par les auteurs de better-sqlite3 :
+        // - WAL : lectures concurrentes + écritures plus rapides
+        // - synchronous=NORMAL : OK avec WAL (sûr en cas de crash applicatif,
+        //   peut perdre la dernière transaction en cas de coupure de courant
+        //   matérielle ; pour la sûreté maximale, passez à FULL).
+        this.db.pragma('journal_mode = WAL');
+        this.db.pragma('synchronous = NORMAL');
+        this.db.pragma('foreign_keys = ON');
+
         this.initialiser();
     }
 
@@ -756,8 +861,8 @@ class GestionnairePersonnes {
 const gestionnaire = new GestionnairePersonnes();
 
 // Ajouter des personnes individuellement
-gestionnaire.ajouterPersonne('Alice Martin', 25, 'alice.martin@email.com');
-gestionnaire.ajouterPersonne('Bob Dupont', 30, 'bob.dupont@email.com');
+gestionnaire.ajouterPersonne('Alice Martin', 25, 'alice.martin@email.com');  
+gestionnaire.ajouterPersonne('Bob Dupont', 30, 'bob.dupont@email.com');  
 
 // Ajouter plusieurs personnes en transaction
 const nouvellesPersonnes = [
@@ -769,21 +874,104 @@ const nouvellesPersonnes = [
 gestionnaire.ajouterPlusieurPersonnes(nouvellesPersonnes);
 
 // Opérations diverses
-gestionnaire.listerPersonnes();
-gestionnaire.rechercherPersonnes('Martin');
-gestionnaire.mettreAJourAge(1, 26);
+gestionnaire.listerPersonnes();  
+gestionnaire.rechercherPersonnes('Martin');  
+gestionnaire.mettreAJourAge(1, 26);  
 
 // Fermer proprement
 gestionnaire.fermer();
 ```
 
-### JavaScript dans le navigateur (WebSQL - Obsolète)
+### JavaScript dans le navigateur
 
-**⚠️ Note importante** : WebSQL est obsolète et ne doit plus être utilisé. Pour SQLite dans le navigateur, utilisez plutôt :
+**⚠️ Note historique** : l'API **WebSQL** (qui exposait SQLite directement aux pages web) est officiellement **dépréciée et retirée des navigateurs** (Chrome l'a supprimée en 2023, Safari/Firefox ne l'ont jamais implémentée pleinement). **Ne l'utilisez plus.**
 
-#### IndexedDB (recommandé pour le navigateur)
+En 2026, deux approches modernes permettent d'utiliser SQLite dans le navigateur :
+
+#### Option 1 — SQLite officiel compilé en WebAssembly (`sqlite-wasm`)
+
+Depuis 2022, l'équipe SQLite distribue une **build WASM officielle** du moteur, qui s'exécute entièrement dans l'onglet et peut persister via l'API OPFS (Origin Private File System).
+
+```html
+<!-- Installation : npm install @sqlite.org/sqlite-wasm -->
+<script type="module">
+import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
+
+const sqlite3 = await sqlite3InitModule();
+
+// Persistance via OPFS (disponible dans un Web Worker)
+const db = new sqlite3.oo1.DB('/mabase.db', 'ct');  // c=créer, t=trace
+
+db.exec(`
+    CREATE TABLE IF NOT EXISTS personnes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nom TEXT NOT NULL,
+        age INTEGER
+    );
+`);
+
+db.exec({
+    sql: 'INSERT INTO personnes (nom, age) VALUES (?, ?)',
+    bind: ['Alice', 25]
+});
+
+const rows = db.exec({
+    sql: 'SELECT * FROM personnes',
+    returnValue: 'resultRows',
+    rowMode: 'object'  // objets {id, nom, age}
+});
+
+console.log(rows);  // [{id: 1, nom: "Alice", age: 25}]  
+db.close();  
+</script>
+```
+
+> 💡 **OPFS (Origin Private File System)** : permet la persistance fichier dans le navigateur **sans demander de permission utilisateur** ; uniquement accessible depuis un Web Worker pour des raisons de perf. Sans OPFS, la base ne persiste qu'en mémoire (perdue à la fermeture de l'onglet).  
+>  
+> ⚠️ **Pré-requis serveur pour OPFS avec SharedArrayBuffer** : pour utiliser SQLite-WASM en mode multi-thread (le plus rapide), le serveur HTTP qui sert votre page doit envoyer ces deux en-têtes :
+> ```
+> Cross-Origin-Opener-Policy:   same-origin
+> Cross-Origin-Embedder-Policy: require-corp
+> ```
+> Sans ces headers, `SharedArrayBuffer` est désactivé par le navigateur (mesure anti-Spectre depuis 2021) et SQLite-WASM bascule en mode mono-thread plus lent. Vérifiez `crossOriginIsolated === true` dans la console.
+
+#### Option 2 — `sql.js` (build communautaire JavaScript)
+
+Plus ancienne et plus simple, `sql.js` est SQLite compilé en JS pur (via Emscripten). Pas de persistance native — il faut sérialiser/désérialiser manuellement vers `localStorage` ou `IndexedDB`.
+
+```html
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0/sql-wasm.js"></script>
+<script>
+initSqlJs({ locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0/${f}` })
+    .then(SQL => {
+        const db = new SQL.Database();
+        db.run("CREATE TABLE personnes (id INTEGER PRIMARY KEY, nom TEXT, age INTEGER);");
+        db.run("INSERT INTO personnes (nom, age) VALUES (?, ?);", ["Alice", 25]);
+
+        const res = db.exec("SELECT * FROM personnes");
+        console.log(res);  // [{columns: [...], values: [[1, "Alice", 25]]}]
+
+        // Persistance manuelle : sérialiser en Uint8Array
+        const data = db.export();
+        localStorage.setItem('mabase', JSON.stringify(Array.from(data)));
+    });
+</script>
+```
+
+#### Comparaison
+
+| Approche | Persistance | Perf | Maintenance |
+|---|---|---|---|
+| **sqlite-wasm officiel** | OPFS natif | Excellente | Équipe SQLite |
+| **sql.js** | Manuelle (export/import) | Bonne | Communautaire |
+| **IndexedDB seul** | Native (key-value) | Bonne | Standard W3C |
+
+#### Alternative non-SQL : IndexedDB
+
+Si vous n'avez pas besoin de SQL (juste du stockage clé-valeur structuré), **IndexedDB** est la solution standardisée des navigateurs :
+
 ```javascript
-// Exemple simple avec IndexedDB (alternative moderne)
+// Exemple simple avec IndexedDB (alternative non-SQL)
 function ouvrirDB() {
     return new Promise((resolve, reject) => {
         const request = indexedDB.open('PersonnesDB', 1);
@@ -856,8 +1044,8 @@ async function ajouterPersonne(nom, age, email) {
 sprintf(query, "SELECT * FROM users WHERE name = '%s'", user_input);
 
 // ✅ Sécurisé en C
-sqlite3_prepare_v2(db, "SELECT * FROM users WHERE name = ?", -1, &stmt, NULL);
-sqlite3_bind_text(stmt, 1, user_input, -1, SQLITE_STATIC);
+sqlite3_prepare_v2(db, "SELECT * FROM users WHERE name = ?", -1, &stmt, NULL);  
+sqlite3_bind_text(stmt, 1, user_input, -1, SQLITE_STATIC);  
 ```
 
 ```java
@@ -865,8 +1053,8 @@ sqlite3_bind_text(stmt, 1, user_input, -1, SQLITE_STATIC);
 String sql = "SELECT * FROM users WHERE name = '" + userInput + "'";
 
 // ✅ Sécurisé en Java
-PreparedStatement pstmt = conn.prepareStatement("SELECT * FROM users WHERE name = ?");
-pstmt.setString(1, userInput);
+PreparedStatement pstmt = conn.prepareStatement("SELECT * FROM users WHERE name = ?");  
+pstmt.setString(1, userInput);  
 ```
 
 ```javascript
@@ -912,8 +1100,8 @@ try {
 
 **En C** :
 ```c
-sqlite3_finalize(stmt);  // Libérer la requête préparée
-sqlite3_close(db);       // Fermer la base de données
+sqlite3_finalize(stmt);  // Libérer la requête préparée  
+sqlite3_close(db);       // Fermer la base de données  
 ```
 
 **En Java** :
@@ -954,8 +1142,15 @@ typedef struct {
 
 Logger* logger_init(const char* db_path) {
     Logger *logger = malloc(sizeof(Logger));
+    if (!logger) return NULL;
+    logger->db = NULL;
+    logger->insert_stmt = NULL;
 
+    // ⚠️ Important : sqlite3_open() alloue des ressources MÊME en cas d'échec,
+    //    il faut donc TOUJOURS appeler sqlite3_close() sur le handle retourné,
+    //    sinon fuite mémoire.
     if (sqlite3_open(db_path, &logger->db) != SQLITE_OK) {
+        sqlite3_close(logger->db);  // libération obligatoire même en cas d'erreur
         free(logger);
         return NULL;
     }
@@ -982,7 +1177,13 @@ Logger* logger_init(const char* db_path) {
 void logger_log(Logger *logger, const char *level, const char *message) {
     char timestamp[64];
     time_t now = time(NULL);
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+    // ⚠️ localtime() n'est PAS thread-safe (retourne un pointeur vers
+    //    une variable statique). En contexte multi-thread, utilisez
+    //    localtime_r(&now, &tm_buf) sur POSIX ou localtime_s sur Windows.
+    struct tm tm_buf;
+    localtime_r(&now, &tm_buf);
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &tm_buf);
 
     sqlite3_bind_text(logger->insert_stmt, 1, timestamp, -1, SQLITE_STATIC);
     sqlite3_bind_text(logger->insert_stmt, 2, level, -1, SQLITE_STATIC);
@@ -1001,11 +1202,12 @@ void logger_cleanup(Logger *logger) {
 
 #### Version Java
 ```java
-import java.sql.*;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
+import java.sql.*;  
+import java.time.LocalDateTime;  
+import java.time.format.DateTimeFormatter;  
 
-public class DatabaseLogger {
+// `implements AutoCloseable` permet l'usage en try-with-resources
+public class DatabaseLogger implements AutoCloseable {
     private Connection conn;
     private PreparedStatement insertStmt;
     private static final DateTimeFormatter FORMATTER =
@@ -1053,6 +1255,7 @@ public class DatabaseLogger {
     public void warn(String message) { log("WARN", message); }
     public void error(String message) { log("ERROR", message); }
 
+    @Override
     public void close() throws SQLException {
         if (insertStmt != null) insertStmt.close();
         if (conn != null) conn.close();
@@ -1205,19 +1408,19 @@ class DatabaseLogger {
 const logger = new DatabaseLogger();
 
 // Simuler des événements d'application
-logger.info('🚀 Application démarrée');
-logger.info('📊 Chargement de la configuration');
-logger.warn('⚠️ Mémoire utilisée à 80%');
-logger.error('❌ Échec de connexion à l\'API externe');
-logger.debug('🔍 Variable X = 42');
+logger.info('🚀 Application démarrée');  
+logger.info('📊 Chargement de la configuration');  
+logger.warn('⚠️ Mémoire utilisée à 80%');  
+logger.error('❌ Échec de connexion à l\'API externe');  
+logger.debug('🔍 Variable X = 42');  
 
 // Afficher les logs récents
 logger.displayRecentLogs(5);
 
 // Afficher les statistiques du jour
-console.log('\n📊 Statistiques du jour :');
-const stats = logger.getLogStats();
-stats.forEach(stat => {
+console.log('\n📊 Statistiques du jour :');  
+const stats = logger.getLogStats();  
+stats.forEach(stat => {  
     console.log(`  ${stat.level}: ${stat.count} occurrences`);
 });
 
@@ -1228,18 +1431,128 @@ logger.cleanOldLogs(7); // Garder seulement 7 jours
 logger.close();
 ```
 
+## Autres langages populaires (aperçu)
+
+Au-delà de C, Java et JavaScript, voici un aperçu des bindings SQLite les plus utilisés en 2026 :
+
+### Rust — `rusqlite`
+
+Binding mature, idiomatique et sûr (le compilateur empêche les fuites de statements) :
+
+```rust
+// Cargo.toml : rusqlite = { version = "0.31", features = ["bundled"] }
+use rusqlite::{Connection, Result, params};
+
+fn main() -> Result<()> {
+    let conn = Connection::open("personnes.db")?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS personnes (
+            id INTEGER PRIMARY KEY,
+            nom TEXT NOT NULL,
+            age INTEGER
+        )", [])?;
+
+    conn.execute(
+        "INSERT INTO personnes (nom, age) VALUES (?1, ?2)",
+        params!["Alice", 25])?;
+
+    let mut stmt = conn.prepare("SELECT nom, age FROM personnes")?;
+    for row in stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?)))? {
+        let (nom, age) = row?;
+        println!("{} ({})", nom, age);
+    }
+    Ok(())
+}
+```
+
+### Go — `database/sql` + driver
+
+Le standard Go fournit l'API `database/sql`. Pour SQLite, deux drivers principaux :
+- **`modernc.org/sqlite`** : pur Go (pas de CGO, compilation cross-platform facile)
+- **`github.com/mattn/go-sqlite3`** : wrapper CGO (plus rapide, mais nécessite gcc)
+
+```go
+package main
+
+import (
+    "database/sql"
+    "fmt"
+    _ "modernc.org/sqlite" // pur Go, pas besoin de gcc
+)
+
+func main() {
+    db, err := sql.Open("sqlite", "personnes.db")
+    if err != nil { panic(err) }
+    defer db.Close()
+
+    _, _ = db.Exec(`CREATE TABLE IF NOT EXISTS personnes (
+        id INTEGER PRIMARY KEY, nom TEXT, age INTEGER)`)
+
+    _, _ = db.Exec("INSERT INTO personnes (nom, age) VALUES (?, ?)", "Alice", 25)
+
+    rows, _ := db.Query("SELECT nom, age FROM personnes")
+    defer rows.Close()
+    for rows.Next() {
+        var nom string; var age int
+        rows.Scan(&nom, &age)
+        fmt.Printf("%s (%d)\n", nom, age)
+    }
+}
+```
+
+### C# / .NET — `Microsoft.Data.Sqlite`
+
+Le binding officiel de Microsoft, basé sur ADO.NET :
+
+```csharp
+// dotnet add package Microsoft.Data.Sqlite
+using Microsoft.Data.Sqlite;
+
+using var conn = new SqliteConnection("Data Source=personnes.db");  
+conn.Open();  
+
+using (var cmd = conn.CreateCommand()) {
+    cmd.CommandText = @"CREATE TABLE IF NOT EXISTS personnes (
+        id INTEGER PRIMARY KEY, nom TEXT NOT NULL, age INTEGER)";
+    cmd.ExecuteNonQuery();
+}
+
+using (var cmd = conn.CreateCommand()) {
+    cmd.CommandText = "INSERT INTO personnes (nom, age) VALUES ($n, $a)";
+    cmd.Parameters.AddWithValue("$n", "Alice");
+    cmd.Parameters.AddWithValue("$a", 25);
+    cmd.ExecuteNonQuery();
+}
+```
+
+### Android / iOS
+
+Plutôt que d'utiliser SQLite directement, les plateformes mobiles fournissent des ORM officiels qui simplifient grandement le travail :
+- **Android** : **[Room](https://developer.android.com/training/data-storage/room)** (Kotlin/Java) — annotations + génération de code à la compilation
+- **iOS** : **[GRDB.swift](https://github.com/groue/GRDB.swift)** (recommandé) ou **Core Data** (Apple, peut s'appuyer sur SQLite en backend)
+
+Pour la sync mobile ↔ cloud, voir le chapitre 7.5 et les solutions comme PowerSync ou ElectricSQL qui supportent Room et GRDB.
+
 ## Migration entre langages
 
 Parfois, vous devez migrer un projet d'un langage à un autre. Voici comment procéder :
 
 ### 1. Préserver le schéma de base de données
-```sql
--- Exporter le schéma (compatible tous langages)
-.schema > schema.sql
 
--- Exporter les données
-.dump > backup.sql
+Les commandes ci-dessous sont **des commandes-points (dot-commands)** du shell `sqlite3`, à exécuter dans la console interactive **ou** en passant la base et la commande au binaire `sqlite3` :
+
+```bash
+# Exporter le schéma (sans les données) — utile pour recréer une base vide
+sqlite3 ma_base.db ".schema" > schema.sql
+
+# Exporter le contenu complet (schéma + données) au format SQL
+sqlite3 ma_base.db ".dump" > backup.sql
+
+# Restaurer ensuite depuis le dump
+sqlite3 nouvelle_base.db < backup.sql
 ```
+
+> 💡 **`.dump` vs sauvegarde binaire `.backup`** : `.dump` produit du SQL textuel, lisible et indépendant de la version SQLite, mais lent et volumineux pour les grosses bases. `.backup nom.db` (ou `Connection.backup()` en Python — voir 7.1) produit une copie binaire compacte et rapide, mais propre à la même architecture SQLite.
 
 ### 2. Adapter les types de données
 
@@ -1256,8 +1569,8 @@ Parfois, vous devez migrer un projet d'un langage à un autre. Voici comment pro
 #!/bin/bash
 # migrate_db.sh - Script de migration de données
 
-SOURCE_DB="$1"
-TARGET_LANG="$2"
+SOURCE_DB="$1"  
+TARGET_LANG="$2"  
 
 echo "Migration de $SOURCE_DB vers $TARGET_LANG"
 
@@ -1311,13 +1624,17 @@ Développez un outil qui :
 ### Documentation officielle
 - **SQLite C API** : [https://sqlite.org/capi3ref.html](https://sqlite.org/capi3ref.html)
 - **JDBC SQLite** : [https://github.com/xerial/sqlite-jdbc](https://github.com/xerial/sqlite-jdbc)
-- **Node.js sqlite3** : [https://github.com/mapbox/node-sqlite3](https://github.com/mapbox/node-sqlite3)
-- **better-sqlite3** : [https://github.com/JoshuaWise/better-sqlite3](https://github.com/JoshuaWise/better-sqlite3)
+- **Node.js sqlite3** : [https://github.com/TryGhost/node-sqlite3](https://github.com/TryGhost/node-sqlite3) *(le repo a été transféré de mapbox vers TryGhost en 2023)*
+- **better-sqlite3** : [https://github.com/WiseLibs/better-sqlite3](https://github.com/WiseLibs/better-sqlite3) *(maintenant maintenu par WiseLibs)*
+- **`@sqlite.org/sqlite-wasm`** : [https://github.com/sqlite/sqlite-wasm](https://github.com/sqlite/sqlite-wasm) — build WASM officielle pour le navigateur
 
 ### Outils de développement
-- **DB Browser for SQLite** : Interface graphique multiplateforme
-- **SQLite Expert** : Outil professionnel pour Windows
-- **Postbird** : Client léger et moderne
+- **DB Browser for SQLite** : interface graphique gratuite et multiplateforme (Windows/macOS/Linux) — [sqlitebrowser.org](https://sqlitebrowser.org/)
+- **SQLiteStudio** : alternative légère, gratuite, avec éditeur SQL et explorateur de données — [sqlitestudio.pl](https://sqlitestudio.pl/)
+- **TablePlus** : client moderne et rapide pour SQLite (et de nombreuses autres BDD), version gratuite limitée — [tableplus.com](https://tableplus.com/)
+- **DBeaver Community** : client universel open-source qui supporte SQLite — [dbeaver.io](https://dbeaver.io/)
+- **JetBrains DataGrip** : payant, mais excellent si vous utilisez déjà l'écosystème IntelliJ/PyCharm/WebStorm
+- **`sqlite3` (CLI)** : le client en ligne de commande livré avec SQLite — souvent suffisant pour des opérations rapides
 
 ### Extensions utiles
 - **SQLite JSON1** : Support natif du JSON
@@ -1328,8 +1645,8 @@ Développez un outil qui :
 
 Cette section vous a présenté l'intégration de SQLite avec trois langages majeurs :
 
-✅ **C** : Performance maximale et contrôle total
-✅ **Java** : Robustesse et écosystème entreprise
+✅ **C** : Performance maximale et contrôle total  
+✅ **Java** : Robustesse et écosystème entreprise  
 ✅ **JavaScript** : Simplicité et développement web
 
 **Points clés à retenir** :

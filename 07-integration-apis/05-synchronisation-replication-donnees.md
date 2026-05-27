@@ -72,6 +72,23 @@ App Mobile A ⟷ App Mobile B ⟷ App Web
 3. **Journal des modifications** : Pour traquer les changements
 4. **Résolution de conflits** : Pour gérer les modifications simultanées
 
+> ⚠️ **Avertissements importants avant d'implémenter votre propre système de sync** :  
+>  
+> **1. Pièges du « last write wins » par timestamp** : utiliser `Date.now()` du client comme arbitre est **fragile**. Si deux clients ont des horloges qui diffèrent de quelques secondes (clock skew), les écritures du client « en avance » écrasent silencieusement celles du client « en retard ». Pour des systèmes critiques :  
+>    - Utilisez des **Hybrid Logical Clocks (HLC)** : combine timestamp physique + compteur logique, ordonne totalement les événements même avec un clock skew.  
+>    - Ou utilisez **vector clocks** / **version vectors** pour détecter les modifications concurrentes (et non « plus récentes »).  
+>  
+> **2. CRDTs (Conflict-free Replicated Data Types)** : approche moderne (2020+) qui garantit la convergence **mathématiquement** — toutes les répliques convergent vers le même état, peu importe l'ordre des opérations. Bibliothèques : `Yjs`, `Automerge`, `loro-crdt`. À privilégier dès qu'on touche à de la collaboration multi-utilisateur (édition de documents, listes partagées).  
+>  
+> **3. Solutions SQLite-replication clé-en-main (2024+)** :  
+>    - **[cr-sqlite](https://github.com/vlcn-io/cr-sqlite)** : extension SQLite ajoutant CRDTs au niveau colonne — la table devient automatiquement réplicable. Utilise des HLCs en interne.  
+>    - **[ElectricSQL](https://electric-sql.com/)** : sync SQLite ↔ Postgres avec résolution de conflits CRDT, mode offline-first transparent.  
+>    - **[PowerSync](https://www.powersync.com/)** : sync SQLite client ↔ Postgres avec un modèle de filtres/règles.  
+>    - **[Turso Sync Engine](https://turso.tech/)** : LibSQL (fork de SQLite) avec réplication intégrée.  
+>    - **[Litestream](https://litestream.io/)** : **réplication continue vers S3/Azure/GCS** sans toucher à votre code applicatif (voir section dédiée plus bas). Idéal pour la disponibilité et la reprise après sinistre.  
+>  
+> Le code ci-dessous est **pédagogique** : il vous fait comprendre les briques sous-jacentes. **En production**, évaluez sérieusement les solutions ci-dessus avant de réinventer la roue.
+
 ### Structure de table avec synchronisation
 
 ```sql
@@ -107,8 +124,8 @@ CREATE TABLE sync_log (
 
 **sync-manager.js**
 ```javascript
-const sqlite3 = require('sqlite3').verbose();
-const { v4: uuidv4 } = require('uuid');
+const sqlite3 = require('sqlite3').verbose();  
+const { v4: uuidv4 } = require('uuid');  
 
 class SyncManager {
     constructor(dbPath) {
@@ -362,6 +379,14 @@ class SyncManager {
     }
 
     async insertOuUpdate(data, timestamp) {
+        // ⚠️ Race condition : entre le SELECT (ligne suivante) et l'INSERT/UPDATE,
+        //    un autre code pourrait modifier la même ligne. Pour le rendre
+        //    atomique, encapsulez les 2 requêtes dans une transaction :
+        //      await this.db.run('BEGIN IMMEDIATE');
+        //      try { ... ; await this.db.run('COMMIT'); }
+        //      catch { await this.db.run('ROLLBACK'); throw; }
+        //    Ou mieux : utilisez `INSERT ... ON CONFLICT(id) DO UPDATE SET ...`
+        //    (UPSERT atomique disponible depuis SQLite 3.24, voir exemple ci-dessous).
         return new Promise((resolve, reject) => {
             // Vérifier si l'enregistrement existe déjà
             this.db.get('SELECT updated_at FROM personnes WHERE id = ?', [data.id], (err, row) => {
@@ -392,9 +417,39 @@ class SyncManager {
                         else resolve({ operation: 'UPDATE', id: data.id });
                     });
                 } else {
-                    // Conflit : données locales plus récentes
+                    // Conflit : données locales plus récentes (ou timestamps égaux)
                     resolve({ operation: 'CONFLICT', id: data.id, message: 'Données locales plus récentes' });
                 }
+            });
+        });
+    }
+
+    // ✅ Version atomique avec UPSERT (SQLite ≥ 3.24, 2018) — recommandée
+    async insertOuUpdateAtomic(data, timestamp) {
+        return new Promise((resolve, reject) => {
+            // ON CONFLICT(id) ... WHERE excluded.updated_at > personnes.updated_at
+            // garantit l'atomicité en une seule requête : pas de race condition.
+            const sql = `
+                INSERT INTO personnes (id, nom, email, age, created_at, updated_at, version, last_sync)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    nom = excluded.nom,
+                    email = excluded.email,
+                    age = excluded.age,
+                    updated_at = excluded.updated_at,
+                    version = excluded.version,
+                    last_sync = excluded.last_sync
+                WHERE excluded.updated_at > personnes.updated_at
+            `;
+            this.db.run(sql, [
+                data.id, data.nom, data.email, data.age,
+                data.created_at, data.updated_at, data.version, timestamp
+            ], function(err) {
+                if (err) reject(err);
+                else resolve({
+                    operation: this.changes > 0 ? 'UPSERT' : 'CONFLICT',
+                    id: data.id
+                });
             });
         });
     }
@@ -614,13 +669,24 @@ module.exports = SyncClient;
 
 ### 3. Serveur de synchronisation simple
 
+> ⚠️ **Avertissement de sécurité — serveur de sync** : la version ci-dessous est **purement pédagogique** et **n'inclut AUCUNE authentification**. En production, vous DEVEZ :  
+> - **Authentifier** chaque requête (token JWT, clé d'API, certificat client)  
+> - **Identifier le client** : qui pousse quel changement ? (audit trail)  
+> - **Limiter le débit** (rate-limit, anti-flood)  
+> - **Limiter la taille du body** : `express.json({ limit: '1mb' })` sinon DoS facile  
+> - **Filtrer ce que le client peut faire** : un client ne devrait voir/pousser que ses propres données (sauf cas multi-utilisateurs collaboratifs explicites)  
+>  
+> Sans authentification, n'importe qui sur Internet peut écraser/voler vos données.
+
 **sync-server.js**
 ```javascript
-const express = require('express');
-const SyncManager = require('./sync-manager');
+const express = require('express');  
+const SyncManager = require('./sync-manager');  
 
 const app = express();
-app.use(express.json());
+// ⚠️ Limitez la taille du body sinon DoS : un attaquant peut envoyer
+//    un body de plusieurs Go et faire OOM le process.
+app.use(express.json({ limit: '1mb' }));
 
 // Instance du gestionnaire de synchronisation côté serveur
 const serverSyncManager = new SyncManager('./server-database.db');
@@ -741,8 +807,8 @@ app.get('/personnes', async (req, res) => {
 });
 
 // Démarrer le serveur
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+const PORT = process.env.PORT || 3001;  
+app.listen(PORT, () => {  
     console.log(`🚀 Serveur de synchronisation démarré sur le port ${PORT}`);
     console.log(`📡 Endpoints disponibles :`);
     console.log(`   GET  /health`);
@@ -760,9 +826,9 @@ module.exports = app;
 
 **app-client.js**
 ```javascript
-const readline = require('readline');
-const SyncManager = require('./sync-manager');
-const SyncClient = require('./sync-client');
+const readline = require('readline');  
+const SyncManager = require('./sync-manager');  
+const SyncClient = require('./sync-client');  
 
 class AppClient {
     constructor() {
@@ -1042,8 +1108,8 @@ class AppClient {
 }
 
 // Démarrer l'application
-const app = new AppClient();
-app.demarrer().catch(console.error);
+const app = new AppClient();  
+app.demarrer().catch(console.error);  
 
 module.exports = AppClient;
 ```
@@ -1144,6 +1210,13 @@ class ConflictResolver {
     }
 
     // Stratégie 3: Fusion intelligente des champs
+    //
+    // ⚠️ ATTENTION — Les règles de fusion ci-dessous sont des EXEMPLES NAÏFS
+    //    à but pédagogique :
+    //    - « Garder le nom le plus long » est arbitraire et peut écraser
+    //      une correction délibérée (« Alice Dupont » → « Alice D. » est légitime).
+    //    - Pour des règles métier solides, faites valider la fusion par l'utilisateur
+    //      ou utilisez des CRDTs au lieu d'heuristiques ad-hoc.
     async mergeFields(conflit) {
         const { serveur, local } = conflit;
 
@@ -1153,23 +1226,23 @@ class ConflictResolver {
         // Fusion field par field
         const merged = { ...localData };
 
-        // Règles de fusion spécifiques
+        // Règles de fusion spécifiques (heuristiques pédagogiques, à adapter)
         if (serverData.nom && serverData.nom !== localData.nom) {
-            // Si les noms sont différents, garder le plus long (plus d'infos)
+            // Heuristique discutable : garder le plus long (plus d'infos)
             if (serverData.nom.length > localData.nom.length) {
                 merged.nom = serverData.nom;
             }
         }
 
         if (serverData.email && serverData.email !== localData.email) {
-            // Pour l'email, toujours prendre le plus récent
+            // Pour l'email, prendre le plus récent (sensible au clock skew !)
             if (serveur.timestamp > local.timestamp) {
                 merged.email = serverData.email;
             }
         }
 
         if (serverData.age && serverData.age !== localData.age) {
-            // Pour l'âge, prendre la valeur non-nulle ou la plus récente
+            // Pour l'âge, prendre la valeur non-nulle si la locale est nulle
             if (!localData.age && serverData.age) {
                 merged.age = serverData.age;
             }
@@ -1790,10 +1863,10 @@ module.exports = { CompressionUtils, CompressedSyncClient };
 
 **realtime-sync-server.js**
 ```javascript
-const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
-const SyncManager = require('./sync-manager');
+const express = require('express');  
+const http = require('http');  
+const socketIo = require('socket.io');  
+const SyncManager = require('./sync-manager');  
 
 class RealtimeSyncServer {
     constructor(port = 3001) {
@@ -1801,11 +1874,34 @@ class RealtimeSyncServer {
         this.server = http.createServer(this.app);
         this.io = socketIo(this.server, {
             cors: {
-                origin: "*",
+                // ⚠️ origin: "*" est OK en développement, JAMAIS en production.
+                //    En prod : restreignez explicitement aux origines autorisées,
+                //    par exemple : origin: ["https://app.monsite.com"]
+                origin: process.env.NODE_ENV === 'production'
+                    ? (process.env.CORS_ORIGIN || '').split(',').filter(Boolean)
+                    : "*",
                 methods: ["GET", "POST"]
             }
         });
         this.port = port;
+
+        // ⚠️ AUTHENTIFICATION : en production, vous devez vérifier l'identité
+        //    de chaque client AVANT de l'enregistrer. Voici une ébauche :
+        //
+        //    this.io.use((socket, next) => {
+        //        const token = socket.handshake.auth?.token;
+        //        if (!token) return next(new Error('Token manquant'));
+        //        try {
+        //            const user = jwt.verify(token, process.env.JWT_SECRET);
+        //            socket.user = user;
+        //            next();
+        //        } catch (err) {
+        //            next(new Error('Token invalide'));
+        //        }
+        //    });
+        //
+        //    Sans authentification, n'importe quel client peut pousser des
+        //    changements arbitraires dans la base — risque majeur.
 
         this.syncManager = new SyncManager('./server-database.db');
         this.connectedClients = new Map();
@@ -2014,8 +2110,8 @@ module.exports = RealtimeSyncServer;
 
 **realtime-sync-client.js**
 ```javascript
-const io = require('socket.io-client');
-const SyncManager = require('./sync-manager');
+const io = require('socket.io-client');  
+const SyncManager = require('./sync-manager');  
 
 class RealtimeSyncClient {
     constructor(syncManager, serverUrl, clientName) {
@@ -2213,9 +2309,9 @@ module.exports = RealtimeSyncClient;
 
 **realtime-app.js**
 ```javascript
-const SyncManager = require('./sync-manager');
-const RealtimeSyncClient = require('./realtime-sync-client');
-const readline = require('readline');
+const SyncManager = require('./sync-manager');  
+const RealtimeSyncClient = require('./realtime-sync-client');  
+const readline = require('readline');  
 
 class RealtimeApp {
     constructor() {
@@ -2641,6 +2737,8 @@ module.exports = RealtimeApp;
 
 **docker-compose.yml**
 ```yaml
+# ℹ️ La clé `version:` est dépréciée et ignorée par Docker Compose v2 (depuis 2023).
+#    Conservée ici pour compatibilité avec des runners CI plus anciens.
 version: '3.8'
 
 services:
@@ -2696,7 +2794,11 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      # ⚠️ Mot de passe par défaut en clair pour la DÉMO uniquement.
+      #    En production : utilisez un secret Docker, un fichier .env ignoré par
+      #    Git, ou un secret manager (Vault, AWS Secrets Manager). Et changez-le
+      #    immédiatement à la première connexion via GF_SECURITY_ADMIN_PASSWORD__FILE.
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?must be set}
     volumes:
       - grafana_data:/var/lib/grafana
     restart: unless-stopped
@@ -2709,7 +2811,8 @@ volumes:
 
 **Dockerfile.sync-server**
 ```dockerfile
-FROM node:18-alpine
+# Node 18 a atteint sa fin de vie en avril 2025 — préférez 20 ou 22 LTS
+FROM node:22-alpine
 
 # Installer sqlite3 et autres dépendances
 RUN apk add --no-cache sqlite curl
@@ -2719,8 +2822,8 @@ WORKDIR /app
 # Copier les fichiers de dépendances
 COPY package*.json ./
 
-# Installer les dépendances
-RUN npm ci --only=production
+# Installer les dépendances (--omit=dev remplace --only=production déprécié en npm 9+)
+RUN npm ci --omit=dev
 
 # Copier le code source
 COPY . .
@@ -2900,32 +3003,32 @@ set -e
 echo "🚀 Déploiement du système de synchronisation..."
 
 # Variables
-ENVIRONMENT=${1:-staging}
-VERSION=$(git rev-parse --short HEAD)
-IMAGE_NAME="sync-server:$VERSION"
+ENVIRONMENT=${1:-staging}  
+VERSION=$(git rev-parse --short HEAD)  
+IMAGE_NAME="sync-server:$VERSION"  
 
-echo "📋 Environnement: $ENVIRONMENT"
-echo "📋 Version: $VERSION"
+echo "📋 Environnement: $ENVIRONMENT"  
+echo "📋 Version: $VERSION"  
 
 # Construire l'image Docker
-echo "🔨 Construction de l'image Docker..."
-docker build -t $IMAGE_NAME -f Dockerfile.sync-server .
+echo "🔨 Construction de l'image Docker..."  
+docker build -t $IMAGE_NAME -f Dockerfile.sync-server .  
 
 # Tagger pour le registry
 docker tag $IMAGE_NAME "registry.example.com/$IMAGE_NAME"
 
 # Pousser vers le registry
-echo "📤 Push vers le registry..."
-docker push "registry.example.com/$IMAGE_NAME"
+echo "📤 Push vers le registry..."  
+docker push "registry.example.com/$IMAGE_NAME"  
 
 # Déployer avec docker-compose
-echo "🚢 Déploiement..."
-export SYNC_SERVER_IMAGE="registry.example.com/$IMAGE_NAME"
-docker-compose -f docker-compose.$ENVIRONMENT.yml up -d
+echo "🚢 Déploiement..."  
+export SYNC_SERVER_IMAGE="registry.example.com/$IMAGE_NAME"  
+docker-compose -f docker-compose.$ENVIRONMENT.yml up -d  
 
 # Vérifier le déploiement
-echo "✅ Vérification du déploiement..."
-sleep 10
+echo "✅ Vérification du déploiement..."  
+sleep 10  
 
 # Test de santé
 for i in {1..5}; do
@@ -2939,8 +3042,8 @@ for i in {1..5}; do
 done
 
 # Afficher les logs
-echo "📋 Logs récents:"
-docker-compose -f docker-compose.$ENVIRONMENT.yml logs --tail=50 sync-server
+echo "📋 Logs récents:"  
+docker-compose -f docker-compose.$ENVIRONMENT.yml logs --tail=50 sync-server  
 
 echo "🎉 Déploiement terminé!"
 ```
@@ -2948,48 +3051,60 @@ echo "🎉 Déploiement terminé!"
 **scripts/backup-sync-data.sh**
 ```bash
 #!/bin/bash
+set -euo pipefail
 
 # Script de sauvegarde pour les données de synchronisation
 
-BACKUP_DIR="/backups/sync"
-DATE=$(date +%Y%m%d_%H%M%S)
-RETENTION_DAYS=30
+BACKUP_DIR="/backups/sync"  
+DATE=$(date +%Y%m%d_%H%M%S)  
+RETENTION_DAYS=30  
+
+# ⚠️ Compose v1 nommait les containers `<project>_<service>_<N>` (underscores),
+#    Compose v2 (2021+) utilise `<project>-<service>-<N>` (tirets).
+#    Pour rester portable, on utilise `docker compose exec <service>` qui
+#    référence le nom du SERVICE défini dans docker-compose.yml, peu importe
+#    la version de Compose et le nom du container généré.
 
 echo "💾 Sauvegarde des données de synchronisation..."
 
 # Créer le dossier de sauvegarde
 mkdir -p $BACKUP_DIR
 
-# Sauvegarder la base de données principale
-echo "📋 Sauvegarde de la base de données..."
-docker exec sync-server_sync-server_1 sqlite3 /app/data/server.db ".backup /tmp/backup_$DATE.db"
-docker cp sync-server_sync-server_1:/tmp/backup_$DATE.db $BACKUP_DIR/
+# Sauvegarder la base de données principale (via la commande SQLite .backup,
+# sûre même base ouverte en écriture).
+echo "📋 Sauvegarde de la base de données..."  
+docker compose exec -T sync-server \  
+    sqlite3 /app/data/server.db ".backup /tmp/backup_$DATE.db"
+docker compose cp sync-server:/tmp/backup_$DATE.db "$BACKUP_DIR/"
 
 # Sauvegarder les logs de synchronisation
-echo "📄 Sauvegarde des logs..."
-tar -czf $BACKUP_DIR/logs_$DATE.tar.gz -C . logs/
+echo "📄 Sauvegarde des logs..."  
+tar -czf $BACKUP_DIR/logs_$DATE.tar.gz -C . logs/  
 
-# Sauvegarder la configuration Redis
-echo "🔴 Sauvegarde Redis..."
-docker exec sync-server_redis_1 redis-cli BGSAVE
-sleep 5
-docker cp sync-server_redis_1:/data/dump.rdb $BACKUP_DIR/redis_$DATE.rdb
+# Sauvegarder la configuration Redis (BGSAVE est asynchrone — on attend la fin)
+echo "🔴 Sauvegarde Redis..."  
+docker compose exec -T redis redis-cli BGSAVE  
+# Polling propre au lieu de sleep aveugle :
+until docker compose exec -T redis redis-cli LASTSAVE | grep -q .; do
+    sleep 1
+done  
+docker compose cp redis:/data/dump.rdb "$BACKUP_DIR/redis_$DATE.rdb"  
 
 # Compresser toutes les sauvegardes
-echo "🗜️ Compression..."
-tar -czf $BACKUP_DIR/sync_complete_$DATE.tar.gz -C $BACKUP_DIR \
+echo "🗜️ Compression..."  
+tar -czf $BACKUP_DIR/sync_complete_$DATE.tar.gz -C $BACKUP_DIR \  
     backup_$DATE.db logs_$DATE.tar.gz redis_$DATE.rdb
 
 # Nettoyer les fichiers temporaires
 rm $BACKUP_DIR/backup_$DATE.db $BACKUP_DIR/logs_$DATE.tar.gz $BACKUP_DIR/redis_$DATE.rdb
 
 # Nettoyer les anciennes sauvegardes
-echo "🧹 Nettoyage des anciennes sauvegardes..."
-find $BACKUP_DIR -name "sync_complete_*.tar.gz" -mtime +$RETENTION_DAYS -delete
+echo "🧹 Nettoyage des anciennes sauvegardes..."  
+find $BACKUP_DIR -name "sync_complete_*.tar.gz" -mtime +$RETENTION_DAYS -delete  
 
 # Vérifier l'intégrité
-echo "🔍 Vérification de l'intégrité..."
-if tar -tzf $BACKUP_DIR/sync_complete_$DATE.tar.gz > /dev/null; then
+echo "🔍 Vérification de l'intégrité..."  
+if tar -tzf $BACKUP_DIR/sync_complete_$DATE.tar.gz > /dev/null; then  
     echo "✅ Sauvegarde créée avec succès: sync_complete_$DATE.tar.gz"
 
     # Taille de la sauvegarde
@@ -3084,12 +3199,25 @@ class SyncSaga {
 
 **Problème : Conflits de synchronisation fréquents**
 ```javascript
-// Solution : Augmenter la granularité des timestamps
-const timestamp = Date.now() * 1000 + performance.now() % 1000;
+// ⚠️ Le code suivant que vous voyez dans beaucoup de tutoriels est BUGGY :
+//    const timestamp = Date.now() * 1000 + performance.now() % 1000;
+//    Il mélange microsecondes (Date.now() * 1000) et millisecondes
+//    (performance.now() % 1000 ∈ [0, 999]), produisant des décalages
+//    de plusieurs secondes — pire que rien.
 
-// Ou utiliser des UUIDs ordonnés
-const { v1: uuidv1 } = require('uuid');
-const orderedId = uuidv1();
+// ✅ Bonne solution 1 : précision sub-milliseconde via performance.timeOrigin
+const timestamp = performance.timeOrigin + performance.now();  // float en ms
+
+// ✅ Bonne solution 2 : UUIDv7 (standardisé RFC 9562 en 2024) — basé sur
+//    le timestamp, lexicographiquement triable, parfait pour les IDs distribués.
+const { v7: uuidv7 } = require('uuid');  // uuid >= 10.0.0  
+const orderedId = uuidv7();  
+// Les UUIDv7 successifs sont naturellement ordonnés : utile pour les index BTree
+// SQLite (évite les page-splits aléatoires) et pour traquer l'ordre de création.
+
+// ✅ Bonne solution 3 (la plus robuste) : Hybrid Logical Clock (HLC)
+//    Combine timestamp physique + compteur logique, résiste au clock skew.
+//    Bibliothèques : `@instantdb/core` (HLC), ou implémentation maison.
 ```
 
 **Problème : Synchronisation lente**
@@ -3120,6 +3248,91 @@ class RobustClient {
     }
 }
 ```
+
+## Litestream : réplication continue sans code
+
+[Litestream](https://litestream.io/) est un outil **non intrusif** : il s'exécute en arrière-plan, lit le journal WAL de SQLite, et envoie en continu les modifications vers un stockage cible (S3, Azure Blob, GCS, SFTP). Votre application **ne change pas une ligne de code**.
+
+### Cas d'usage typiques
+
+- **Sauvegarde continue** : RPO (Recovery Point Objective) de quelques secondes, sans coût-CPU notable.
+- **Streaming vers un read-replica** : un serveur secondaire peut consommer le flux et tenir une copie quasi-temps-réel.
+- **Disaster recovery** : en cas de perte du serveur principal, on restaure la base depuis S3 et on repart où on s'était arrêté.
+
+### Installation et configuration
+
+```bash
+# Installer (Linux)
+wget https://github.com/benbjohnson/litestream/releases/download/v0.3.13/litestream-v0.3.13-linux-amd64.tar.gz  
+tar -xzf litestream-v0.3.13-linux-amd64.tar.gz  
+sudo mv litestream /usr/local/bin/  
+
+# Vérifier
+litestream version
+```
+
+**`/etc/litestream.yml`** :
+
+```yaml
+# Configuration Litestream : répliquer /var/lib/app/data.db vers S3
+dbs:
+  - path: /var/lib/app/data.db
+    replicas:
+      - type: s3
+        bucket: mon-bucket-backup
+        path: production/data.db
+        region: eu-west-1
+        # Variables d'environnement requises :
+        #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+        retention: 168h           # garder 7 jours d'historique
+        snapshot-interval: 24h    # snapshot complet toutes les 24h
+        sync-interval: 1s         # envoyer les changements toutes les secondes
+```
+
+### Démarrage en service systemd
+
+```bash
+# /etc/systemd/system/litestream.service
+sudo tee /etc/systemd/system/litestream.service <<'EOF'
+[Unit]
+Description=Litestream replicator  
+After=network.target  
+
+[Service]
+ExecStart=/usr/local/bin/litestream replicate  
+Restart=always  
+EnvironmentFile=/etc/litestream.env  
+
+[Install]
+WantedBy=multi-user.target  
+EOF  
+
+sudo systemctl enable --now litestream
+```
+
+### Restauration depuis S3
+
+```bash
+# Restaurer la dernière version
+litestream restore -o /var/lib/app/data.db s3://mon-bucket-backup/production/data.db
+
+# Restaurer à un instant précis (point-in-time recovery)
+litestream restore -timestamp 2026-05-27T10:30:00Z \
+    -o /var/lib/app/data.db \
+    s3://mon-bucket-backup/production/data.db
+```
+
+### Limites et points d'attention
+
+> ⚠️ **À garder en tête** :  
+> - **Mode WAL obligatoire** : Litestream lit le fichier `.db-wal` ; activez `PRAGMA journal_mode = WAL` avant de démarrer.  
+> - **Un seul writer Litestream par base** : ne lancez pas deux processus Litestream sur le même fichier `.db`.  
+> - **Pas de réplication bidirectionnelle** : Litestream est asymétrique (un primary → N replicas en lecture seule). Si vous cherchez du multi-maître ou de la sync mobile, regardez plutôt cr-sqlite, ElectricSQL ou PowerSync.  
+> - **Snapshots et coûts S3** : configurez `retention` et `snapshot-interval` pour maîtriser la facture (chaque snapshot est une copie complète).
+
+### Alternative : `litefs`
+
+[LiteFS](https://fly.io/docs/litefs/) (par les mêmes auteurs que Litestream) va plus loin : système de fichiers FUSE qui réplique le `.db` au niveau **page** vers un cluster distribué. Permet d'avoir plusieurs nœuds avec failover automatique. Compromis : un seul writer à la fois (élection de leader), les lecteurs voient des données légèrement décalées (replication lag de l'ordre de la seconde).
 
 ## Conclusion
 
@@ -3167,10 +3380,28 @@ Dans cette section sur la synchronisation et réplication SQLite, vous avez déc
 
 ### Ressources pour aller plus loin
 
-- **CouchDB Replication** : Inspiration pour les algorithmes de sync
-- **Operational Transform** : Pour la collaboration temps réel
-- **WebRTC** : Pour la synchronisation peer-to-peer
-- **Apache Kafka** : Pour les systèmes de streaming de données
+**Solutions SQLite-replication clé-en-main (2024+)** — à privilégier en production :
+- **[cr-sqlite](https://github.com/vlcn-io/cr-sqlite)** : extension CRDT au niveau colonne pour SQLite
+- **[ElectricSQL](https://electric-sql.com/)** : sync SQLite ↔ Postgres avec CRDT et offline-first
+- **[PowerSync](https://www.powersync.com/)** : sync SQLite client ↔ Postgres avec règles déclaratives
+- **[Turso Sync Engine](https://turso.tech/)** : LibSQL avec réplication multi-régions
+- **[InstantDB](https://instantdb.com/)** : base relationnelle réactive avec HLC intégré
+
+**CRDTs et algorithmes** :
+- **[Yjs](https://github.com/yjs/yjs)** / **[Automerge](https://github.com/automerge/automerge)** / **[Loro](https://loro.dev/)** : bibliothèques CRDT pour collaboration temps réel
+- **[Hybrid Logical Clocks](https://muratbuffalo.blogspot.com/2014/07/hybrid-logical-clocks.html)** : papier de Kulkarni et al. (2014)
+- **Algorithmes de consensus** : Raft, Paxos, PBFT (lecture longue mais essentielle pour comprendre les compromis CAP)
+
+**Concepts et inspirations** :
+- **[CouchDB Replication](https://docs.couchdb.org/en/stable/replication/index.html)** : modèle pull-based éprouvé
+- **[Operational Transform](https://en.wikipedia.org/wiki/Operational_transformation)** : utilisé par Google Docs (alternative aux CRDT)
+- **WebRTC** : pour la synchronisation peer-to-peer sans serveur intermédiaire
+- **Apache Kafka / NATS JetStream** : event sourcing à grande échelle
+
+**Bases de données distribuées à connaître** :
+- **CockroachDB** / **YugabyteDB** : Postgres-compatible, distribuées avec consensus Raft
+- **FoundationDB** : KV ACID distribué (utilisé par Apple, Snowflake)
+- **Cassandra** / **ScyllaDB** : NoSQL avec réplication eventually-consistent
 
 La synchronisation de données est un domaine complexe mais passionnant. Avec SQLite comme base, vous avez maintenant les outils pour créer des applications robustes qui fonctionnent aussi bien hors ligne qu'en ligne, avec une synchronisation transparente pour vos utilisateurs.
 

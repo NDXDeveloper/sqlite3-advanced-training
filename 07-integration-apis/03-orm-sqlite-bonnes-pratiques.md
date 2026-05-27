@@ -55,25 +55,29 @@ pip install sqlalchemy
 #### Exemple de base
 
 ```python
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from datetime import datetime
+# SQLAlchemy 2.0+ : style moderne avec DeclarativeBase et select()
+from sqlalchemy import create_engine, String, Integer, DateTime, select  
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker  
+from datetime import datetime, timezone  
 
 # Configuration de base
-Base = declarative_base()
-engine = create_engine('sqlite:///exemple.db', echo=True)  # echo=True pour voir les requêtes SQL
-Session = sessionmaker(bind=engine)
+class Base(DeclarativeBase):
+    pass
 
-# Définition d'un modèle
+engine = create_engine('sqlite:///exemple.db', echo=True)  # echo=True pour voir les requêtes SQL  
+Session = sessionmaker(bind=engine)  
+
+# Définition d'un modèle (typage Python moderne)
 class Personne(Base):
     __tablename__ = 'personnes'
 
-    id = Column(Integer, primary_key=True)
-    nom = Column(String(100), nullable=False)
-    age = Column(Integer)
-    email = Column(String(120), unique=True)
-    date_creation = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nom: Mapped[str] = mapped_column(String(100))
+    age: Mapped[int | None] = mapped_column(default=None)
+    email: Mapped[str] = mapped_column(String(120), unique=True)
+    date_creation: Mapped[datetime] = mapped_column(
+        default=lambda: datetime.now(timezone.utc)
+    )
 
     def __repr__(self):
         return f"<Personne(nom='{self.nom}', age={self.age})>"
@@ -81,78 +85,89 @@ class Personne(Base):
 # Créer les tables
 Base.metadata.create_all(engine)
 
-# Utilisation de base
-session = Session()
+# Utilisation de base (style 2.0 avec context manager)
+with Session() as session:
+    # Créer une nouvelle personne
+    nouvelle_personne = Personne(nom='Alice Martin', age=25, email='alice@email.com')
+    session.add(nouvelle_personne)
+    session.commit()
 
-# Créer une nouvelle personne
-nouvelle_personne = Personne(nom='Alice Martin', age=25, email='alice@email.com')
-session.add(nouvelle_personne)
-session.commit()
+    # Rechercher des personnes (style 2.0 avec select())
+    personnes = session.execute(select(Personne)).scalars().all()
+    for personne in personnes:
+        print(personne)
 
-# Rechercher des personnes
-personnes = session.query(Personne).all()
-for personne in personnes:
-    print(personne)
+    # Recherche avec filtre
+    alice = session.execute(
+        select(Personne).filter_by(nom='Alice Martin')
+    ).scalar_one_or_none()
+    print(f"Alice trouvée : {alice}")
 
-# Recherche avec filtre
-alice = session.query(Personne).filter_by(nom='Alice Martin').first()
-print(f"Alice trouvée : {alice}")
-
-# Mise à jour
-alice.age = 26
-session.commit()
-
-# Fermer la session
-session.close()
+    # Mise à jour
+    if alice:
+        alice.age = 26
+        session.commit()
+# La connexion est fermée automatiquement à la sortie du `with`
 ```
 
-#### Gestion des relations avec SQLAlchemy
+> 💡 **SQLAlchemy 1.x → 2.0** : depuis SQLAlchemy 2.0 (sortie en 2023), le style « legacy » `session.query(Personne).filter_by(...).all()` reste supporté mais le **style 2.0 recommandé** utilise `session.execute(select(...)).scalars().all()`. Les deux fonctionnent ; le 2.0 est plus explicite, mieux typé, et compatible avec `async`.  
+>  
+> ⚠️ **`declarative_base()` et `datetime.utcnow()`** : ces deux APIs sont **dépréciées** :  
+> - `from sqlalchemy.ext.declarative import declarative_base` → utilisez la classe `DeclarativeBase` (importée depuis `sqlalchemy.orm`).  
+> - `datetime.utcnow()` est déprécié depuis Python 3.12 → utilisez `datetime.now(timezone.utc)` qui est *timezone-aware*.
+
+#### Gestion des relations avec SQLAlchemy (style 2.0)
 
 ```python
-from sqlalchemy import ForeignKey
-from sqlalchemy.orm import relationship
+from typing import List, Optional  
+from sqlalchemy import ForeignKey, String  
+from sqlalchemy.orm import Mapped, mapped_column, relationship, DeclarativeBase  
+
+class Base(DeclarativeBase):
+    pass
 
 class Utilisateur(Base):
     __tablename__ = 'utilisateurs'
 
-    id = Column(Integer, primary_key=True)
-    nom = Column(String(100), nullable=False)
-    email = Column(String(120), unique=True)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nom: Mapped[str] = mapped_column(String(100))
+    email: Mapped[str] = mapped_column(String(120), unique=True)
 
-    # Relation vers les articles
-    articles = relationship("Article", back_populates="auteur")
+    # Relation vers les articles (one-to-many) — typage explicite
+    articles: Mapped[List["Article"]] = relationship(back_populates="auteur")
 
 class Article(Base):
     __tablename__ = 'articles'
 
-    id = Column(Integer, primary_key=True)
-    titre = Column(String(200), nullable=False)
-    contenu = Column(String(5000))
-    auteur_id = Column(Integer, ForeignKey('utilisateurs.id'))
+    id: Mapped[int] = mapped_column(primary_key=True)
+    titre: Mapped[str] = mapped_column(String(200))
+    contenu: Mapped[Optional[str]] = mapped_column(String(5000))
+    auteur_id: Mapped[int] = mapped_column(ForeignKey('utilisateurs.id'))
 
-    # Relation vers l'utilisateur
-    auteur = relationship("Utilisateur", back_populates="articles")
+    # Relation inverse (many-to-one)
+    auteur: Mapped["Utilisateur"] = relationship(back_populates="articles")
 
 # Utilisation des relations
-session = Session()
+with Session() as session:
+    # Créer un utilisateur et des articles en une seule opération
+    utilisateur = Utilisateur(nom='Bob Dupont', email='bob@email.com')
+    utilisateur.articles = [
+        Article(titre='Mon premier article', contenu='Contenu...'),
+        Article(titre='Mon second article', contenu='Autre contenu...'),
+    ]
 
-# Créer un utilisateur et des articles
-utilisateur = Utilisateur(nom='Bob Dupont', email='bob@email.com')
-article1 = Article(titre='Mon premier article', contenu='Contenu...', auteur=utilisateur)
-article2 = Article(titre='Mon second article', contenu='Autre contenu...', auteur=utilisateur)
+    session.add(utilisateur)  # cascade automatique sur articles
+    session.commit()
 
-session.add(utilisateur)
-session.add(article1)
-session.add(article2)
-session.commit()
+    # Accéder aux relations
+    print(f"Articles de {utilisateur.nom}:")
+    for article in utilisateur.articles:
+        print(f"  - {article.titre}")
 
-# Accéder aux relations
-print(f"Articles de {utilisateur.nom}:")
-for article in utilisateur.articles:
-    print(f"  - {article.titre}")
-
-print(f"Auteur de '{article1.titre}': {article1.auteur.nom}")
+    print(f"Auteur de '{utilisateur.articles[0].titre}': {utilisateur.articles[0].auteur.nom}")
 ```
+
+> 💡 **`Mapped[List[...]]` vs `relationship("...")`** : depuis SQLAlchemy 2.0, le typage `Mapped[List["Article"]]` permet à `relationship` d'inférer automatiquement la cible (`Article`), le type de collection (`list`), et l'option `uselist`. Plus besoin de répéter `relationship("Article", uselist=True, ...)`.
 
 ### JavaScript/Node.js : Sequelize
 
@@ -295,8 +310,8 @@ const Article = sequelize.define('Article', {
 });
 
 // Définir les relations
-Utilisateur.hasMany(Article, { as: 'articles', foreignKey: 'auteurId' });
-Article.belongsTo(Utilisateur, { as: 'auteur', foreignKey: 'auteurId' });
+Utilisateur.hasMany(Article, { as: 'articles', foreignKey: 'auteurId' });  
+Article.belongsTo(Utilisateur, { as: 'auteur', foreignKey: 'auteurId' });  
 
 async function exempleRelations() {
     // Créer un utilisateur avec des articles
@@ -346,17 +361,25 @@ Hibernate est l'ORM de référence en Java, très puissant mais plus complexe.
 ```xml
 <dependencies>
     <dependency>
-        <groupId>org.hibernate</groupId>
+        <groupId>org.hibernate.orm</groupId>
         <artifactId>hibernate-core</artifactId>
-        <version>6.2.7.Final</version>
+        <version>6.6.4.Final</version>
     </dependency>
     <dependency>
         <groupId>org.xerial</groupId>
         <artifactId>sqlite-jdbc</artifactId>
-        <version>3.43.0.0</version>
+        <version>3.49.1.0</version>
+    </dependency>
+    <!-- Dialecte SQLite officiel pour Hibernate 6 -->
+    <dependency>
+        <groupId>org.hibernate.orm</groupId>
+        <artifactId>hibernate-community-dialects</artifactId>
+        <version>6.6.4.Final</version>
     </dependency>
 </dependencies>
 ```
+
+> ℹ️ **Note Hibernate 6** : depuis Hibernate 6, le `groupId` est passé de `org.hibernate` à `org.hibernate.orm`. Le dialecte SQLite (`SQLiteDialect`) est disponible dans le module séparé `hibernate-community-dialects`. Vérifiez les dernières versions sur [Maven Central](https://central.sonatype.com/).
 
 #### Configuration Hibernate (hibernate.cfg.xml)
 
@@ -370,7 +393,9 @@ Hibernate est l'ORM de référence en Java, très puissant mais plus complexe.
         <!-- Configuration de la base de données -->
         <property name="hibernate.connection.driver_class">org.sqlite.JDBC</property>
         <property name="hibernate.connection.url">jdbc:sqlite:exemple.db</property>
-        <property name="hibernate.dialect">org.hibernate.dialect.SQLiteDialect</property>
+        <!-- ⚠️ Hibernate 6 : SQLiteDialect a été déplacé dans le module
+             hibernate-community-dialects, package org.hibernate.community.dialect -->
+        <property name="hibernate.dialect">org.hibernate.community.dialect.SQLiteDialect</property>
 
         <!-- Configuration Hibernate -->
         <property name="hibernate.hbm2ddl.auto">update</property>
@@ -390,8 +415,8 @@ Hibernate est l'ORM de référence en Java, très puissant mais plus complexe.
 ```java
 package com.exemple.model;
 
-import jakarta.persistence.*;
-import java.time.LocalDateTime;
+import jakarta.persistence.*;  
+import java.time.LocalDateTime;  
 
 @Entity
 @Table(name = "personnes")
@@ -454,8 +479,8 @@ public class Personne {
 ```java
 package com.exemple.util;
 
-import org.hibernate.SessionFactory;
-import org.hibernate.cfg.Configuration;
+import org.hibernate.SessionFactory;  
+import org.hibernate.cfg.Configuration;  
 
 public class HibernateUtil {
     private static SessionFactory sessionFactory;
@@ -485,11 +510,11 @@ public class HibernateUtil {
 ```java
 package com.exemple.dao;
 
-import com.exemple.model.Personne;
-import com.exemple.util.HibernateUtil;
-import org.hibernate.Session;
-import org.hibernate.Transaction;
-import org.hibernate.query.Query;
+import com.exemple.model.Personne;  
+import com.exemple.util.HibernateUtil;  
+import org.hibernate.Session;  
+import org.hibernate.Transaction;  
+import org.hibernate.query.Query;  
 
 import java.util.List;
 
@@ -500,7 +525,11 @@ public class PersonneDAO {
         Transaction transaction = null;
         try (Session session = HibernateUtil.getSessionFactory().openSession()) {
             transaction = session.beginTransaction();
-            session.saveOrUpdate(personne);
+            // ⚠️ Hibernate 6 : saveOrUpdate() est déprécié.
+            //    Pour un objet "détaché" (qui existe déjà en BDD) → session.merge(personne)
+            //    Pour un objet "transient" (nouveau, jamais persisté) → session.persist(personne)
+            //    merge() couvre les deux cas et reste sûr ; on l'utilise ici par simplicité.
+            session.merge(personne);
             transaction.commit();
             System.out.println("✅ Personne sauvegardée : " + personne.getNom());
         } catch (Exception e) {
@@ -550,7 +579,8 @@ public class PersonneDAO {
             transaction = session.beginTransaction();
             Personne personne = session.get(Personne.class, id);
             if (personne != null) {
-                session.delete(personne);
+                // ⚠️ Hibernate 6 : session.delete() est déprécié → utilisez session.remove() (style JPA).
+                session.remove(personne);
                 transaction.commit();
                 System.out.println("🗑️ Personne supprimée : " + personne.getNom());
             } else {
@@ -580,9 +610,9 @@ public class PersonneDAO {
 ```java
 package com.exemple;
 
-import com.exemple.dao.PersonneDAO;
-import com.exemple.model.Personne;
-import com.exemple.util.HibernateUtil;
+import com.exemple.dao.PersonneDAO;  
+import com.exemple.model.Personne;  
+import com.exemple.util.HibernateUtil;  
 
 import java.util.List;
 
@@ -648,8 +678,8 @@ class DatabaseConfig:
         return self.Session()
 
 # Utilisation
-config = DatabaseConfig('sqlite:///app.db', echo=True)
-config.create_all_tables()
+config = DatabaseConfig('sqlite:///app.db', echo=True)  
+config.create_all_tables()  
 ```
 
 ```javascript
@@ -667,25 +697,29 @@ const config = {
     }
 };
 
-const env = process.env.NODE_ENV || 'development';
-const sequelize = new Sequelize(config[env]);
+const env = process.env.NODE_ENV || 'development';  
+const sequelize = new Sequelize(config[env]);  
 ```
 
 #### ❌ À éviter
 
 ```python
 # Configuration dispersée et répétée
-engine1 = create_engine('sqlite:///db1.db')
-engine2 = create_engine('sqlite:///db1.db')  # Duplication
-Session1 = sessionmaker(bind=engine1)
+engine1 = create_engine('sqlite:///db1.db')  
+engine2 = create_engine('sqlite:///db1.db')  # Duplication  
+Session1 = sessionmaker(bind=engine1)  
 # ... code répétitif
 ```
 
 ### 2. Définition des modèles
 
+> ℹ️ **Note sur le style** : les exemples ci-dessous utilisent indifféremment le **style 1.x** (`Column(Integer, ...)`) et le **style 2.0** (`Mapped[int] = mapped_column(...)`). Les deux fonctionnent en SQLAlchemy 2.x ; le style 1.x reste très répandu dans le code existant. Les principes (clés primaires, contraintes, validation) sont identiques.
+
 #### ✅ Modèles bien structurés
 
 ```python
+from datetime import datetime, timezone
+
 class Personne(Base):
     __tablename__ = 'personnes'
 
@@ -697,9 +731,13 @@ class Personne(Base):
     email = Column(String(120), unique=True, nullable=False)
     age = Column(Integer, CheckConstraint('age >= 0 AND age <= 150'))
 
-    # Métadonnées utiles
-    date_creation = Column(DateTime, default=datetime.utcnow, nullable=False)
-    date_modification = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Métadonnées utiles — datetime.utcnow déprécié → datetime.now(timezone.utc)
+    date_creation = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    date_modification = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
+    )
 
     # Validation métier
     @validates('email')
@@ -783,9 +821,9 @@ async function creerUtilisateurAvecArticles(userData, articlesData) {
 
 ```python
 # Session jamais fermée
-session = Session()
-personne = Personne(nom="Test")
-session.add(personne)
+session = Session()  
+personne = Personne(nom="Test")  
+session.add(personne)  
 # Oubli de commit et close
 ```
 
@@ -850,8 +888,8 @@ async function listerPersonnesPagine(page = 1, limit = 10) {
 
 ```python
 # Problème N+1
-utilisateurs = session.query(Utilisateur).all()
-for utilisateur in utilisateurs:
+utilisateurs = session.query(Utilisateur).all()  
+for utilisateur in utilisateurs:  
     # Requête supplémentaire pour chaque utilisateur !
     print(f"{utilisateur.nom} a {len(utilisateur.articles)} articles")
 ```
@@ -861,8 +899,8 @@ for utilisateur in utilisateurs:
 #### ✅ Validation multicouche
 
 ```python
-from sqlalchemy.orm import validates
-import re
+from sqlalchemy.orm import validates  
+import re  
 
 class Utilisateur(Base):
     __tablename__ = 'utilisateurs'
@@ -886,10 +924,34 @@ class Utilisateur(Base):
         return password
 
     def set_password(self, password):
-        # Hashage sécurisé du mot de passe
-        import hashlib
-        self.mot_de_passe = hashlib.sha256(password.encode()).hexdigest()
+        # ⚠️ NE JAMAIS utiliser hashlib.sha256 / md5 / sha1 pour des mots de passe !
+        # Ces hash sont CONÇUS pour être rapides → un attaquant peut tester
+        # des milliards de combinaisons par seconde sur un GPU.
+        #
+        # ✅ Utilisez un algorithme de "key stretching" conçu pour les mots
+        #    de passe (lent + saler automatique) :
+        from argon2 import PasswordHasher  # pip install argon2-cffi
+        ph = PasswordHasher()
+        self.mot_de_passe = ph.hash(password)
+        # Alternatives acceptables : bcrypt (pip install bcrypt)
+        # ou scrypt/pbkdf2 du module hashlib (avec un sel ≥ 16 octets et ≥ 600 000 itérations)
+
+    def verify_password(self, password):
+        from argon2 import PasswordHasher
+        from argon2.exceptions import VerifyMismatchError
+        try:
+            PasswordHasher().verify(self.mot_de_passe, password)
+            return True
+        except VerifyMismatchError:
+            return False
 ```
+
+> 🔒 **Sécurité des mots de passe — règle absolue** : un hash cryptographique « classique » (SHA-256, MD5, SHA-1) est **inadapté** au stockage de mots de passe. Ces fonctions sont conçues pour être rapides (bonnes pour vérifier l'intégrité d'un fichier, mauvaises pour résister à une attaque par force brute). Utilisez toujours un **password hashing algorithm** spécialement conçu pour cet usage :  
+> - **Argon2** (winner du Password Hashing Competition 2015, recommandé par OWASP) → `pip install argon2-cffi`  
+> - **bcrypt** (éprouvé depuis 1999, toujours sûr) → `pip install bcrypt`  
+> - **scrypt** ou **PBKDF2-HMAC-SHA256** (intégrés dans `hashlib`, avec ≥ 600 000 itérations selon OWASP 2023)  
+>  
+> Ces algorithmes intègrent le **salage automatique** et un coût configurable qui peut être augmenté avec le temps.
 
 ```javascript
 // Sequelize - Validation intégrée
@@ -927,8 +989,10 @@ const Utilisateur = sequelize.define('Utilisateur', {
     hooks: {
         beforeCreate: async (utilisateur) => {
             // Hashage automatique du mot de passe
+            // ⚠️ Cost factor : 10 était l'historique 2010+, mais OWASP recommande
+            //    ≥ 12 en 2026 (réévaluer périodiquement quand le matériel évolue).
             const bcrypt = require('bcrypt');
-            utilisateur.motDePasse = await bcrypt.hash(utilisateur.motDePasse, 10);
+            utilisateur.motDePasse = await bcrypt.hash(utilisateur.motDePasse, 12);
         }
     }
 });
@@ -964,12 +1028,12 @@ alembic upgrade head
 # Migration exemple (généré par Alembic)
 """Ajouter table utilisateurs
 
-Revision ID: 001
-Create Date: 2024-01-15 10:30:00
+Revision ID: 001  
+Create Date: 2024-01-15 10:30:00  
 
 """
-from alembic import op
-import sqlalchemy as sa
+from alembic import op  
+import sqlalchemy as sa  
 
 def upgrade():
     op.create_table('utilisateurs',
@@ -1044,10 +1108,10 @@ module.exports = {
 
 ```python
 # tests/test_models.py
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from models import Base, Personne
+import pytest  
+from sqlalchemy import create_engine  
+from sqlalchemy.orm import sessionmaker  
+from models import Base, Personne  
 
 @pytest.fixture
 def db_session():
@@ -1094,8 +1158,8 @@ def test_recherche_personne(db_session):
 
 ```javascript
 // tests/models.test.js
-const { Sequelize } = require('sequelize');
-const { Personne } = require('../models');
+const { Sequelize } = require('sequelize');  
+const { Personne } = require('../models');  
 
 describe('Modèle Personne', () => {
     let sequelize;
@@ -1156,8 +1220,8 @@ describe('Modèle Personne', () => {
 ### 1. Système de cache avec ORM
 
 ```python
-from functools import wraps
-import time
+from functools import wraps  
+import time  
 
 class CacheManager:
     def __init__(self):
@@ -1217,9 +1281,9 @@ def obtenir_statistiques_utilisateurs():
 ### 2. Audit et historique automatique
 
 ```python
-from sqlalchemy.event import listens_for
-from sqlalchemy import Column, Integer, String, DateTime, Text
-import json
+from sqlalchemy.event import listens_for  
+from sqlalchemy import Column, Integer, String, DateTime, Text  
+import json  
 
 class AuditLog(Base):
     __tablename__ = 'audit_logs'
@@ -1230,7 +1294,8 @@ class AuditLog(Base):
     action = Column(String(10), nullable=False)  # INSERT, UPDATE, DELETE
     old_values = Column(Text)  # JSON
     new_values = Column(Text)  # JSON
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    # datetime.utcnow déprécié Python 3.12+ → utiliser datetime.now(timezone.utc)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     user_id = Column(Integer)  # Qui a fait la modification
 
 def log_changes(mapper, connection, target):
@@ -1277,8 +1342,8 @@ def log_personne_changes(mapper, connection, target):
 ### 3. Pattern Repository avec ORM
 
 ```python
-from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Any
+from abc import ABC, abstractmethod  
+from typing import List, Optional, Dict, Any  
 
 class BaseRepository(ABC):
     """Interface de base pour les repositories"""
@@ -1392,9 +1457,9 @@ class PersonneService:
         return self.repository.get_statistics()
 
 # Utilisation
-session_factory = sessionmaker(bind=engine)
-repository = PersonneRepository(session_factory)
-service = PersonneService(repository)
+session_factory = sessionmaker(bind=engine)  
+repository = PersonneRepository(session_factory)  
+service = PersonneService(repository)  
 
 # Exemples d'utilisation
 try:
@@ -1419,9 +1484,9 @@ except ValueError as e:
 ### 1. Monitoring des requêtes
 
 ```python
-import time
-from sqlalchemy import event
-from sqlalchemy.engine import Engine
+import time  
+from sqlalchemy import event  
+from sqlalchemy.engine import Engine  
 
 # Logger les requêtes lentes
 @event.listens_for(Engine, "before_cursor_execute")
@@ -1485,14 +1550,22 @@ def lister_articles_avec_auteurs_bon():
         for article in articles:
             print(f"{article.titre} par {article.auteur.nom}")
 
-# ✅ Alternative avec select_related (pour les relations many-to-one)
-def lister_articles_select_related():
+# ✅ Alternative avec contains_eager (quand vous faites le JOIN à la main)
+#    Note : `select_related` est un terme de Django ORM, pas de SQLAlchemy.
+#    Ici, contains_eager remplit la relation à partir des colonnes du JOIN explicite.
+def lister_articles_jointure_explicite():
     with database_session() as session:
         articles = session.query(Article)\
                          .join(Article.auteur)\
                          .options(contains_eager(Article.auteur))\
+                         .filter(Utilisateur.actif == True)\
                          .all()
 ```
+
+> 💡 **`joinedload` vs `selectinload` vs `contains_eager`** :  
+> - **`joinedload`** : un seul `SELECT ... LEFT JOIN ...` ; risque de produire un produit cartésien si vous chargez plusieurs *-to-many simultanément.  
+> - **`selectinload`** : deux requêtes (une pour le parent, une `WHERE parent_id IN (...)` pour les enfants) — plus rapide pour les *-to-many.  
+> - **`contains_eager`** : à utiliser quand vous écrivez le `JOIN` vous-même (avec filtres sur la table jointe).
 
 ```javascript
 // JavaScript/Sequelize - Éviter N+1
@@ -1522,38 +1595,66 @@ async function listerArticlesAvecAuteursBon() {
 
 ### 3. Pagination efficace
 
-```python
-def pagination_efficace(page=1, per_page=20):
-    with database_session() as session:
-        # Calculer l'offset
-        offset = (page - 1) * per_page
+**Approche classique avec `OFFSET / LIMIT`** — simple mais s'effondre sur de gros datasets :
 
-        # Requête avec comptage efficace
+```python
+def pagination_offset(page=1, per_page=20):
+    with database_session() as session:
+        offset = (page - 1) * per_page
         query = session.query(Personne)
 
-        # Compter le total (peut être mis en cache)
+        # Compter le total (peut être mis en cache si les données changent peu)
         total = query.count()
 
-        # Récupérer la page demandée
+        # ⚠️ OFFSET = 1 000 000 force SQLite à scanner 1 000 000 lignes
+        #    avant d'en retourner 20 → coût linéaire avec la profondeur.
         items = query.offset(offset).limit(per_page).all()
 
-        # Calculer les métadonnées de pagination
         total_pages = (total + per_page - 1) // per_page
-        has_next = page < total_pages
-        has_prev = page > 1
-
         return {
             'items': items,
             'pagination': {
-                'page': page,
-                'per_page': per_page,
-                'total': total,
-                'total_pages': total_pages,
-                'has_next': has_next,
-                'has_prev': has_prev
+                'page': page, 'per_page': per_page,
+                'total': total, 'total_pages': total_pages,
+                'has_next': page < total_pages, 'has_prev': page > 1
             }
         }
 ```
+
+**Approche moderne — Keyset pagination (« seek pagination »)** : performance constante quelle que soit la profondeur, idéal pour les flux infinis (style Twitter, mobile) :
+
+```python
+def pagination_keyset(last_id=None, per_page=20):
+    """
+    On ne demande plus 'la page 50000' mais 'les 20 après l'id X'.
+    Nécessite un index sur la colonne de tri (souvent la clé primaire).
+    """
+    with database_session() as session:
+        query = session.query(Personne).order_by(Personne.id)
+        if last_id is not None:
+            query = query.filter(Personne.id > last_id)  # ← O(log n) avec index
+        items = query.limit(per_page + 1).all()        # +1 pour détecter has_next
+
+        has_next = len(items) > per_page
+        items = items[:per_page]
+        next_cursor = items[-1].id if has_next and items else None
+
+        return {
+            'items': items,
+            'next_cursor': next_cursor,  # à passer au prochain appel
+            'has_next': has_next,
+        }
+
+# Utilisation côté client :
+#   page1 = pagination_keyset()
+#   page2 = pagination_keyset(last_id=page1['next_cursor'])
+```
+
+> 💡 **Quand utiliser quoi ?**  
+> - **OFFSET / LIMIT** : pages numérotées (admin BO « page 1, 2, 3… »), datasets < 10 000 lignes.  
+> - **Keyset** : timeline / feed infini, datasets > 100 000 lignes, exports paginés API.  
+>  
+> **Tri composite** : si vous triez sur un champ non unique (ex. `created_at`), utilisez un tuple `(created_at, id)` pour départager les doublons : `WHERE (created_at, id) > (?, ?)`.
 
 ## Débogage et diagnostic
 
@@ -1563,8 +1664,8 @@ def pagination_efficace(page=1, per_page=20):
 import logging
 
 # Configuration du logging SQLAlchemy
-logging.basicConfig()
-logging.getLogger('sqlalchemy.engine').setLevel(logging.INFO)
+logging.basicConfig()  
+logging.getLogger('sqlalchemy.engine').setLevel(logging.INFO)  
 
 # Ou plus spécifique
 engine = create_engine('sqlite:///app.db', echo=True)  # echo=True pour voir toutes les requêtes
@@ -1591,9 +1692,9 @@ const sequelize = new Sequelize('sqlite:app.db', {
 ### 2. Profiling des performances
 
 ```python
-import cProfile
-import pstats
-from io import StringIO
+import cProfile  
+import pstats  
+from io import StringIO  
 
 def profiler_fonction(func):
     """Décorateur pour profiler une fonction"""
@@ -1652,11 +1753,34 @@ def fonction_a_profiler():
 
 ### 📚 Ressources supplémentaires
 
-- **SQLAlchemy** : [https://docs.sqlalchemy.org/](https://docs.sqlalchemy.org/)
-- **Sequelize** : [https://sequelize.org/docs/](https://sequelize.org/docs/)
-- **Hibernate** : [https://hibernate.org/orm/documentation/](https://hibernate.org/orm/documentation/)
-- **Alembic** (migrations SQLAlchemy) : [https://alembic.sqlalchemy.org/](https://alembic.sqlalchemy.org/)
-- **Sequelize CLI** : [https://sequelize.org/docs/v6/other-topics/migrations/](https://sequelize.org/docs/v6/other-topics/migrations/)
+**Les ORMs présentés dans ce chapitre** :
+- **SQLAlchemy** (Python, le plus mature) : [docs.sqlalchemy.org](https://docs.sqlalchemy.org/)
+- **Sequelize** (Node.js) : [sequelize.org](https://sequelize.org/docs/)
+- **Hibernate** (Java) : [hibernate.org](https://hibernate.org/orm/documentation/)
+- **Alembic** (migrations SQLAlchemy) : [alembic.sqlalchemy.org](https://alembic.sqlalchemy.org/)
+- **Sequelize CLI** : [migrations Sequelize](https://sequelize.org/docs/v6/other-topics/migrations/)
+
+**ORMs modernes alternatifs à connaître en 2026** :
+- **Python** :
+  - **[SQLModel](https://sqlmodel.tiangolo.com/)** : combine SQLAlchemy 2.0 et Pydantic, par l'auteur de FastAPI — typage strict de bout en bout
+  - **[Peewee](http://docs.peewee-orm.com/)** : petit ORM léger, idéal pour les scripts et petits projets
+  - **[Tortoise ORM](https://tortoise.github.io/)** : ORM async (asyncio), inspiré de Django ORM
+  - **[Pony ORM](https://ponyorm.org/)** : syntaxe basée sur les générateurs Python (`SELECT(p for p in Personne if p.age > 18)`)
+- **Node.js / TypeScript** :
+  - **[Prisma](https://www.prisma.io/)** : ORM moderne avec schéma déclaratif `.prisma`, génération de client typé — très populaire en 2024-2026
+  - **[Drizzle ORM](https://orm.drizzle.team/)** : approche "query builder" légère, type-safe, performance proche du SQL brut
+  - **[TypeORM](https://typeorm.io/)** : ORM classique avec décorateurs (style Hibernate)
+  - **[MikroORM](https://mikro-orm.io/)** : data-mapper pour TypeScript avec unit-of-work
+  - **[Kysely](https://kysely.dev/)** : query builder TypeScript ultra-type-safe (pas vraiment un ORM)
+- **Java / Kotlin** :
+  - **[jOOQ](https://www.jooq.org/)** : type-safe SQL builder, alternative idiomatique à Hibernate
+  - **[Exposed](https://github.com/JetBrains/Exposed)** : ORM Kotlin de JetBrains
+- **Rust** :
+  - **[Diesel](https://diesel.rs/)** : ORM type-safe avec macros
+  - **[SeaORM](https://www.sea-ql.org/SeaORM/)** : ORM async pour Tokio
+- **Mobile** :
+  - **[Room](https://developer.android.com/training/data-storage/room)** (Android) : annotations + génération de DAO à la compilation
+  - **[GRDB.swift](https://github.com/groue/GRDB.swift)** (iOS) : type-safe avec Combine/async-await
 
 Cette section vous a donné les bases solides pour utiliser les ORM avec SQLite. La clé du succès est de comprendre ce qui se passe sous le capot tout en profitant de la simplicité des ORM. Commencez par des projets simples et augmentez progressivement la complexité en appliquant les bonnes pratiques présentées ici.
 

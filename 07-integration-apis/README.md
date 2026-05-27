@@ -52,7 +52,7 @@ Exposition des données SQLite via des APIs web, permettant l'accès depuis des 
 SQLite gère nativement la concurrence via un système de verrous, mais les stratégies d'accès concurrent varient selon le langage d'intégration. Il est crucial de comprendre le modèle de threading de votre langage pour optimiser l'accès concurrent.
 
 ### Gestion des connexions
-Contrairement aux SGBD serveur, SQLite ne nécessite pas de pool de connexions. Cependant, la gestion appropriée des connexions reste importante pour optimiser les performances et éviter les blocages.
+Contrairement aux SGBD serveur, SQLite n'a pas besoin d'un pool de connexions au sens classique (pas de coût d'établissement TCP, pas d'authentification). Cependant, dans un programme **multithread avec WAL**, créer **une connexion par thread** (ou utiliser une petite pool de 3–10 connexions de lecture + 1 connexion d'écriture) reste une bonne pratique pour permettre les lectures en parallèle. Évitez en revanche le partage d'une même connexion entre plusieurs threads sans verrou : `check_same_thread=False` en Python ou équivalents dans d'autres langages exigent une synchronisation manuelle.
 
 ### Sérialisation des données
 L'intégration implique souvent la sérialisation/désérialisation entre les types natifs du langage et les types SQLite. Une stratégie claire de mapping des types est essentielle.
@@ -71,6 +71,36 @@ Chaque langage expose différemment les erreurs SQLite. Une stratégie cohérent
 **Logging et monitoring** : Mettez en place une stratégie de logging des opérations critiques et de monitoring des performances.
 
 **Tests d'intégration** : Développez des tests spécifiques pour valider l'intégration SQLite dans différents scénarios d'usage.
+
+## Quand choisir SQLite — et quand passer à autre chose
+
+Pour rester honnête, voici quelques règles pour décider si SQLite est la bonne base pour votre projet d'intégration.
+
+### ✅ SQLite est un excellent choix si…
+- **Charge de lecture dominante** : analytics, catalogues, configuration, lectures fréquentes et écritures occasionnelles.
+- **Application desktop, mobile ou embarquée** : un fichier `.db` qui suit l'application est idéal.
+- **Backend web modeste à moyen** : un blog, un wiki, un SaaS B2B jusqu'à ~ 100 000 utilisateurs actifs/jour est tout à fait gérable avec SQLite en mode WAL.
+- **Tests automatisés** : `:memory:` rend les tests d'intégration très rapides.
+- **Edge computing / IoT** : SQLite tient sur quelques centaines de Ko de RAM.
+- **Cache local / offline-first** : combiné à une sync (voir 7.5), c'est la base de quasi toutes les apps mobiles modernes.
+
+### ⚠️ SQLite reste possible mais demande de l'attention si…
+- **Écritures concurrentes intenses** : un seul writer à la fois par base. Le mode WAL atténue le problème mais le plafond reste autour de quelques centaines d'écritures par seconde. Si vous insérez en lot, regroupez en transactions.
+- **Données très volumineuses** : SQLite gère sans souci jusqu'à plusieurs centaines de Go, mais `VACUUM` devient lent et la sauvegarde simple-fichier n'est plus pratique.
+- **Plusieurs machines accédant à la même base** : SQLite n'est pas conçu pour les filesystems réseau (NFS, SMB) — verrouillage non garanti. Solutions : `Litestream` pour la réplication continue, ou passez à `LibSQL`/`Turso` pour la réplication multi-régions.
+
+### ❌ Choisissez plutôt PostgreSQL / MySQL / MariaDB si…
+- Vous avez **plusieurs centaines d'utilisateurs en écriture concurrente** (e-commerce sur grosses promos, chat temps réel mondial, plateformes collaboratives intensives).
+- Vous avez besoin de **rôles et permissions fins** côté base (`GRANT`/`REVOKE` par utilisateur, row-level security).
+- Vous voulez de la **réplication maître-esclave native**, du failover automatique, du sharding.
+- Vous utilisez des **fonctionnalités SQL avancées** absentes en SQLite : `MERGE`, vraies procédures stockées (PL/pgSQL), `MATERIALIZED VIEW` rafraîchissables, types riches (`UUID` natif, `JSONB` indexable, types géographiques avec `PostGIS`).
+- Vous voulez du **streaming de changements** (logical replication, CDC) facile à brancher sur Kafka/Debezium.
+
+### 🔄 Migration progressive
+Si votre projet démarre avec SQLite et finit par dépasser ses limites, la migration vers PostgreSQL est bien outillée :
+- **`pgloader`** : convertit une base SQLite en Postgres en une commande.
+- **ORM identique** : SQLAlchemy, Sequelize, Hibernate, etc., changent seulement la chaîne de connexion.
+- **Solutions hybrides** : `ElectricSQL` ou `PowerSync` permettent même de garder SQLite côté client et Postgres côté serveur, le meilleur des deux mondes.
 
 ## Objectifs de ce chapitre
 

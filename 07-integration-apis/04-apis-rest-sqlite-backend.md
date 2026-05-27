@@ -26,12 +26,12 @@ Dans cette section, nous allons apprendre à créer des APIs REST qui utilisent 
 ### Structure typique d'une API REST
 
 ```
-GET    /api/personnes          → Lister toutes les personnes
-GET    /api/personnes/123      → Récupérer la personne avec l'ID 123
-POST   /api/personnes          → Créer une nouvelle personne
-PUT    /api/personnes/123      → Mettre à jour complètement la personne 123
-PATCH  /api/personnes/123      → Mettre à jour partiellement la personne 123
-DELETE /api/personnes/123      → Supprimer la personne 123
+GET    /api/personnes          → Lister toutes les personnes  
+GET    /api/personnes/123      → Récupérer la personne avec l'ID 123  
+POST   /api/personnes          → Créer une nouvelle personne  
+PUT    /api/personnes/123      → Mettre à jour complètement la personne 123  
+PATCH  /api/personnes/123      → Mettre à jour partiellement la personne 123  
+DELETE /api/personnes/123      → Supprimer la personne 123  
 ```
 
 ### Format des données
@@ -83,15 +83,27 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # Configuration générale
+    # ⚠️ En production, la SECRET_KEY DOIT venir de l'environnement, sans fallback.
+    #    Le fallback ci-dessous est uniquement pour le développement local.
+    #    Un secret en clair dans le code = compromission de toutes les sessions
+    #    et tokens signés si le code fuite.
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
     DEBUG = True
+
+# Pour la production, utilisez plutôt :
+class ProductionConfig(Config):
+    DEBUG = False
+    # SECRET_KEY ne doit JAMAIS avoir de fallback en prod
+    SECRET_KEY = os.environ['SECRET_KEY']  # KeyError si absent → c'est voulu
 ```
+
+> 💡 **Note Flask-SQLAlchemy 3** : `Model.query` (par exemple `Personne.query.all()`) reste supporté mais est **deprecated**. La syntaxe recommandée est `db.session.execute(db.select(Personne)).scalars().all()`. Les exemples ci-dessous utilisent l'API legacy pour rester concis et lisibles, mais privilégiez la nouvelle syntaxe dans le code neuf.
 
 **models.py**
 ```python
-from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
-import re
+from flask_sqlalchemy import SQLAlchemy  
+from datetime import datetime, timezone  
+import re  
 
 db = SQLAlchemy()
 
@@ -102,7 +114,8 @@ class Personne(db.Model):
     nom = db.Column(db.String(100), nullable=False)
     age = db.Column(db.Integer, nullable=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    date_creation = db.Column(db.DateTime, default=datetime.utcnow)
+    # ⚠️ datetime.utcnow déprécié depuis Python 3.12 → datetime.now(timezone.utc)
+    date_creation = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     def __init__(self, nom, age, email):
         self.nom = nom
@@ -139,19 +152,19 @@ class Personne(db.Model):
 
 **app.py**
 ```python
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from models import db, Personne
-from config import Config
-import os
+from flask import Flask, request, jsonify  
+from flask_cors import CORS  
+from models import db, Personne  
+from config import Config  
+import os  
 
 # Créer l'application Flask
-app = Flask(__name__)
-app.config.from_object(Config)
+app = Flask(__name__)  
+app.config.from_object(Config)  
 
 # Initialiser les extensions
-db.init_app(app)
-CORS(app)  # Permettre les requêtes cross-origin
+db.init_app(app)  
+CORS(app)  # Permettre les requêtes cross-origin  
 
 # Créer le dossier instance s'il n'existe pas
 os.makedirs('instance', exist_ok=True)
@@ -161,6 +174,22 @@ with app.app_context():
     db.create_all()
 
 # ==================== ROUTES API ====================
+#
+# ⚠️ NOTE TRANSVERSALE SUR LES MESSAGES D'ERREUR :
+# Les routes ci-dessous retournent `str(e)` au client en cas d'exception non
+# prévue. C'est PÉDAGOGIQUE mais à proscrire en PRODUCTION : un message comme
+# "no such column: u.password_hash" révèle votre schéma à un attaquant.
+#
+# Pratique recommandée :
+#   try:
+#       ...
+#   except SQLAlchemyError as e:
+#       app.logger.exception("Erreur BDD")           # log complet côté serveur
+#       return jsonify({'error': 'Erreur serveur'}), 500   # message générique
+#   except ValueError as e:
+#       return jsonify({'error': str(e)}), 400       # OK : erreur métier explicite
+#
+# Distinguer aussi 500 (bug serveur) de 503 (BDD indisponible).
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -179,6 +208,8 @@ def lister_personnes():
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 10, type=int)
         per_page = min(per_page, 100)  # Limiter à 100 par page maximum
+        # ⚠️ Toujours imposer une limite max sur per_page : sans ça, un client
+        #    peut demander per_page=1000000 et faire tomber le serveur (OOM).
 
         # Paramètre de recherche optionnel
         search = request.args.get('search', '').strip()
@@ -216,7 +247,9 @@ def lister_personnes():
 def obtenir_personne(person_id):
     """GET /api/personnes/123 - Récupérer une personne spécifique"""
     try:
-        personne = Personne.query.get(person_id)
+        # ⚠️ Personne.query.get(id) est déprécié en Flask-SQLAlchemy 3 / SQLAlchemy 2.0
+        # → utilisez db.session.get(Personne, id) à la place
+        personne = db.session.get(Personne, person_id)
 
         if not personne:
             return jsonify({'error': 'Personne non trouvée'}), 404
@@ -269,7 +302,7 @@ def creer_personne():
 def mettre_a_jour_personne(person_id):
     """PUT /api/personnes/123 - Mettre à jour complètement une personne"""
     try:
-        personne = Personne.query.get(person_id)
+        personne = db.session.get(Personne, person_id)
 
         if not personne:
             return jsonify({'error': 'Personne non trouvée'}), 404
@@ -311,7 +344,7 @@ def mettre_a_jour_personne(person_id):
 def modifier_personne(person_id):
     """PATCH /api/personnes/123 - Modifier partiellement une personne"""
     try:
-        personne = Personne.query.get(person_id)
+        personne = db.session.get(Personne, person_id)
 
         if not personne:
             return jsonify({'error': 'Personne non trouvée'}), 404
@@ -355,7 +388,7 @@ def modifier_personne(person_id):
 def supprimer_personne(person_id):
     """DELETE /api/personnes/123 - Supprimer une personne"""
     try:
-        personne = Personne.query.get(person_id)
+        personne = db.session.get(Personne, person_id)
 
         if not personne:
             return jsonify({'error': 'Personne non trouvée'}), 404
@@ -424,8 +457,21 @@ if __name__ == '__main__':
     print("   GET    /api/stats")
     print("\n📡 API accessible sur : http://localhost:5000")
 
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # ⚠️ 3 dangers de cette ligne en production :
+    #   1. debug=True : expose un debugger interactif (RCE possible si l'attaquant
+    #      a la PIN — voir CVE Werkzeug Debugger). À DÉSACTIVER en prod.
+    #   2. host='0.0.0.0' : écoute sur toutes les interfaces réseau ; en local,
+    #      préférez '127.0.0.1'.
+    #   3. app.run() lance le serveur de développement de Flask, jamais conçu
+    #      pour la production. Utilisez gunicorn, uWSGI ou Waitress en prod :
+    #         gunicorn -w 4 -b 0.0.0.0:5000 app:app
+    app.run(debug=True, host='127.0.0.1', port=5000)
 ```
+
+> ⚠️ **CORS et configuration sécurité** : `CORS(app)` sans argument autorise **toutes les origines** par défaut, ce qui est acceptable en développement mais **dangereux en production** — n'importe quel site malveillant pourrait appeler votre API depuis le navigateur d'un utilisateur authentifié. En production, restreignez explicitement :
+> ```python
+> CORS(app, origins=["https://monsite.com", "https://admin.monsite.com"])
+> ```
 
 ### Test de l'API avec curl
 
@@ -467,9 +513,9 @@ Express.js est le framework web le plus populaire pour Node.js.
 ### Installation
 
 ```bash
-npm init -y
-npm install express sqlite3 cors helmet morgan dotenv
-npm install --save-dev nodemon
+npm init -y  
+npm install express sqlite3 cors helmet morgan dotenv  
+npm install --save-dev nodemon  
 ```
 
 ### Structure du projet
@@ -493,15 +539,15 @@ mon-api-node/
 
 **.env**
 ```
-PORT=3000
-DATABASE_PATH=./database.db
-NODE_ENV=development
+PORT=3000  
+DATABASE_PATH=./database.db  
+NODE_ENV=development  
 ```
 
 **config/database.js**
 ```javascript
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const sqlite3 = require('sqlite3').verbose();  
+const path = require('path');  
 
 class Database {
     constructor() {
@@ -888,9 +934,9 @@ module.exports = {
 ## routes/personnes.js
 
 ```javascript
-const express = require('express');
-const Personne = require('../models/personne');
-const { validateJson, validateId, validatePagination } = require('../middleware/validation');
+const express = require('express');  
+const Personne = require('../models/personne');  
+const { validateJson, validateId, validatePagination } = require('../middleware/validation');  
 
 const router = express.Router();
 
@@ -1025,17 +1071,17 @@ module.exports = initRouter;
 ## server.js
 
 ```javascript
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
-const database = require('./config/database');
-const personnesRoutes = require('./routes/personnes');
-const Personne = require('./models/personne');
+require('dotenv').config();  
+const express = require('express');  
+const cors = require('cors');  
+const helmet = require('helmet');  
+const morgan = require('morgan');  
+const database = require('./config/database');  
+const personnesRoutes = require('./routes/personnes');  
+const Personne = require('./models/personne');  
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const app = express();  
+const PORT = process.env.PORT || 3000;  
 
 // ==================== MIDDLEWARE ====================
 
@@ -1054,8 +1100,8 @@ app.use(cors({
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 // Parsing JSON
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));  
+app.use(express.urlencoded({ extended: true }));  
 
 // ==================== ROUTES ====================
 
@@ -1167,6 +1213,17 @@ module.exports = app;
 ```
 
 ## Client web HTML/JavaScript
+
+> ⚠️ **Note de sécurité — XSS via `innerHTML`** : l'exemple de client ci-dessous insère le nom et l'email directement dans `innerHTML` avec interpolation (`${personne.nom}`). Si un nom contient du HTML (`<script>alert(1)</script>`), il sera exécuté. **Pour un client de production**, utilisez `textContent` (sécurisé par défaut) ou échappez avec une fonction comme :  
+>
+> ```javascript
+> const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({
+>     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+> }[c]));
+> // puis : `<h3>${escapeHtml(personne.nom)}</h3>`
+> ```
+>  
+> Ou utilisez un framework (React/Vue/Svelte) qui échappe automatiquement.
 
 **public/index.html**
 ```html
@@ -1486,8 +1543,8 @@ module.exports = app;
 
 **tests/api.test.js**
 ```javascript
-const request = require('supertest');
-const app = require('../server');
+const request = require('supertest');  
+const app = require('../server');  
 
 describe('API Personnes', () => {
     let server;
@@ -1637,7 +1694,16 @@ describe('API Personnes', () => {
 ```javascript
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'votre-secret-jwt-super-securise';
+// ⚠️ JAMAIS de fallback en clair pour un secret JWT : si le code fuite (Git public,
+//    bundle JS exposé, etc.) un attaquant peut forger des tokens admin valides.
+//    En production : refusez de démarrer si JWT_SECRET n'est pas défini.
+const JWT_SECRET = process.env.JWT_SECRET;  
+if (!JWT_SECRET || JWT_SECRET.length < 32) {  
+    throw new Error(
+        "JWT_SECRET manquant ou trop court (< 32 caractères).\n" +
+        "Générez : node -e \"console.log(require('crypto').randomBytes(64).toString('hex'))\""
+    );
+}
 
 // Middleware d'authentification
 const authenticateToken = (req, res, next) => {
@@ -1648,7 +1714,10 @@ const authenticateToken = (req, res, next) => {
         return res.status(401).json({ error: 'Token d\'accès requis' });
     }
 
-    jwt.verify(token, JWT_SECRET, (err, user) => {
+    // ⚠️ Toujours vérifier explicitement l'algorithme attendu. Sans cela,
+    //    un attaquant peut forger un token avec `alg: "none"` ou exploiter
+    //    la faille "algorithm confusion" (HS256 ↔ RS256). Voir CVE-2015-9235.
+    jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }, (err, user) => {
         if (err) {
             return res.status(403).json({ error: 'Token invalide' });
         }
@@ -1662,11 +1731,22 @@ const authenticateToken = (req, res, next) => {
 const generateToken = (user) => {
     return jwt.sign(
         {
-            id: user.id,
-            email: user.email
+            sub: String(user.id),       // "subject" (recommandé par RFC 7519)
+            email: user.email,
+            // ⚠️ N'embarquez JAMAIS de données sensibles (mot de passe, secrets).
+            //    Le JWT est SIGNÉ mais PAS chiffré — son payload est lisible par
+            //    n'importe qui via jwt.io ou base64-decode.
         },
         JWT_SECRET,
-        { expiresIn: '24h' }
+        {
+            algorithm: 'HS256',
+            expiresIn: '15m',           // ⚠️ 15 min > 24h : un token compromis
+                                        //    expire vite. Utilisez un refresh
+                                        //    token séparé (longue durée, stocké
+                                        //    en BDD, révocable) pour renouveler.
+            issuer: 'mon-api',
+            audience: 'mon-frontend'
+        }
     );
 };
 
@@ -1676,21 +1756,32 @@ module.exports = {
 };
 ```
 
+> 🔒 **Bonnes pratiques JWT 2026** :  
+> - **Algorithme explicite** : `algorithms: ['HS256']` à la vérification, sinon faille « algorithm confusion ».  
+> - **Secret ≥ 256 bits** (`crypto.randomBytes(32)` minimum, idéalement 64) — un secret faible se brute-force hors-ligne.  
+> - **Durée courte** (15 min – 1 h) + **refresh token séparé** stocké en BDD (révocable).  
+> - **Pas de données sensibles** dans le payload : il est seulement *signé*, pas *chiffré* (utilisez JWE si vous voulez du chiffrement).  
+> - **Stockage côté client** : `HttpOnly` + `Secure` cookies > `localStorage` (qui est vulnérable au XSS).
+
 **routes/auth.js**
+
+> ⚠️ **AVERTISSEMENT** : l'exemple « simplifié » ci-dessous (comparaison en clair `password === 'password123'`) est **uniquement pédagogique** pour montrer le flux JWT. **En production**, vous DEVEZ : (1) stocker les utilisateurs dans une table dédiée avec mot de passe **hashé via bcrypt/argon2**, (2) utiliser une fonction de comparaison à **temps constant** comme `bcrypt.compare()` (qui résiste aux timing attacks), (3) limiter les tentatives via rate-limiting. La version sécurisée suit l'exemple simplifié.
+
+**Version pédagogique (ne pas utiliser telle quelle en production)** :
+
 ```javascript
-const express = require('express');
-const bcrypt = require('bcrypt');
-const { generateToken } = require('../middleware/auth');
+const express = require('express');  
+const { generateToken } = require('../middleware/auth');  
 
 const router = express.Router();
 
-// POST /api/auth/login
+// POST /api/auth/login — VERSION SIMPLIFIÉE PÉDAGOGIQUE
 router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // Vérifier les identifiants (version simplifiée)
-        // En pratique, vérifier contre une table utilisateurs
+        // ⚠️ DANGER : comparaison en clair, identifiants codés en dur.
+        //    EN PRODUCTION → voir la version sécurisée ci-dessous.
         if (email === 'admin@example.com' && password === 'password123') {
             const user = { id: 1, email: 'admin@example.com' };
             const token = generateToken(user);
@@ -1711,6 +1802,106 @@ router.post('/login', async (req, res) => {
 
 module.exports = router;
 ```
+
+**Version sécurisée avec table utilisateurs et bcrypt** :
+
+```javascript
+const express = require('express');  
+const bcrypt = require('bcrypt');  
+const { generateToken } = require('../middleware/auth');  
+
+const router = express.Router();
+
+// Récupération de l'utilisateur depuis la BDD (à adapter selon votre couche d'accès)
+async function findUserByEmail(db, email) {
+    return new Promise((resolve, reject) => {
+        db.get(
+            'SELECT id, email, password_hash FROM utilisateurs WHERE email = ?',
+            [email.toLowerCase()],
+            (err, row) => err ? reject(err) : resolve(row)
+        );
+    });
+}
+
+router.post('/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email et mot de passe requis' });
+        }
+
+        const user = await findUserByEmail(req.db, email);
+
+        // ⚠️ TIMING ATTACK : si l'utilisateur n'existe pas, on doit quand même
+        //    exécuter bcrypt.compare() avec un hash factice pour que la durée
+        //    de réponse soit identique dans les deux cas. Sinon un attaquant
+        //    peut deviner les emails valides en chronométrant les réponses.
+        const hashToCompare = user
+            ? user.password_hash
+            : '$2b$12$invalidhashinvalidhashinvalidhashinvalidhashinvalid';
+
+        const valid = await bcrypt.compare(password, hashToCompare);
+
+        if (!valid || !user) {
+            return res.status(401).json({ error: 'Identifiants invalides' });
+        }
+
+        const token = generateToken({ id: user.id, email: user.email });
+        res.json({
+            message: 'Connexion réussie',
+            token,
+            user: { id: user.id, email: user.email }
+        });
+    } catch (error) {
+        console.error('Erreur login:', error);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
+// POST /api/auth/register — création d'un compte
+router.post('/register', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        // Validation basique
+        if (!email || !password || password.length < 8) {
+            return res.status(400).json({
+                error: 'Email requis, mot de passe ≥ 8 caractères'
+            });
+        }
+
+        // bcrypt avec cost factor 12 (recommandé 2024+ ; 10 est trop faible)
+        const password_hash = await bcrypt.hash(password, 12);
+
+        // Insertion (gérer l'erreur de doublon UNIQUE)
+        await new Promise((resolve, reject) => {
+            req.db.run(
+                'INSERT INTO utilisateurs (email, password_hash) VALUES (?, ?)',
+                [email.toLowerCase(), password_hash],
+                function (err) {
+                    if (err) return reject(err);
+                    resolve(this.lastID);
+                }
+            );
+        });
+
+        res.status(201).json({ message: 'Compte créé' });
+    } catch (error) {
+        if (error.message.includes('UNIQUE')) {
+            return res.status(409).json({ error: 'Cet email est déjà utilisé' });
+        }
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
+module.exports = router;
+```
+
+> 🔒 **Trois points clés** :  
+> - **bcrypt cost ≥ 12** en 2026 (réévaluer périodiquement — voir [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html))  
+> - **Réponses à durée constante** : même temps de réponse que l'utilisateur existe ou non  
+> - **Limitation du débit** sur `/login` (cf. `rateLimit` plus loin) pour ralentir le brute-force
 
 ## Monitoring et sécurité
 
@@ -1741,16 +1932,28 @@ const createLimiter = rateLimit({
 
 // Appliquer les limites
 app.use('/api/', generalLimiter);
-app.use('/api/personnes', ['POST'], createLimiter);
+
+// ⚠️ `app.use(path, methods, mw)` n'existe pas en Express — `methods` n'est pas
+// un argument valide. Pour limiter uniquement les POST, soit on l'attache
+// directement à la route, soit on filtre dans un middleware :
+
+// Option 1 : attaché à la route (le plus propre)
+app.post('/api/personnes', createLimiter, /* handler */);
+
+// Option 2 : filtre conditionnel
+app.use('/api/personnes', (req, res, next) => {
+    if (req.method === 'POST') return createLimiter(req, res, next);
+    next();
+});
 ```
 
 ### Monitoring des métriques
 
 ```javascript
 // Middleware de monitoring simple
-let requestCount = 0;
-let errorCount = 0;
-const startTime = Date.now();
+let requestCount = 0;  
+let errorCount = 0;  
+const startTime = Date.now();  
 
 const metrics = {
     requests: () => requestCount,
@@ -1870,8 +2073,8 @@ npm install swagger-jsdoc swagger-ui-express
 
 **swagger.js**
 ```javascript
-const swaggerJsdoc = require('swagger-jsdoc');
-const swaggerUi = require('swagger-ui-express');
+const swaggerJsdoc = require('swagger-jsdoc');  
+const swaggerUi = require('swagger-ui-express');  
 
 const options = {
     definition: {
@@ -2364,24 +2567,25 @@ module.exports = {
 
 **.env.production**
 ```bash
-NODE_ENV=production
-PORT=8000
-DATABASE_PATH=/var/lib/app/database.db
-JWT_SECRET=your-super-secure-jwt-secret-change-me
-CORS_ORIGIN=https://yourapp.com,https://admin.yourapp.com
-LOG_LEVEL=info
-RATE_LIMIT_WINDOW_MS=900000
-RATE_LIMIT_MAX=1000
+NODE_ENV=production  
+PORT=8000  
+DATABASE_PATH=/var/lib/app/database.db  
+JWT_SECRET=your-super-secure-jwt-secret-change-me  
+CORS_ORIGIN=https://yourapp.com,https://admin.yourapp.com  
+LOG_LEVEL=info  
+RATE_LIMIT_WINDOW_MS=900000  
+RATE_LIMIT_MAX=1000  
 ```
 
 ### Dockerfile
 
 ```dockerfile
-FROM node:18-alpine
+# Node 18 a atteint sa fin de vie en avril 2025 — utilisez 20 LTS ou 22 LTS
+FROM node:22-alpine
 
 # Créer un utilisateur non-root
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nodejs -u 1001
+RUN addgroup -g 1001 -S nodejs  
+RUN adduser -S nodejs -u 1001  
 
 # Définir le répertoire de travail
 WORKDIR /app
@@ -2389,8 +2593,8 @@ WORKDIR /app
 # Copier les fichiers de dépendances
 COPY package*.json ./
 
-# Installer les dépendances
-RUN npm ci --only=production && npm cache clean --force
+# Installer les dépendances (--omit=dev remplace --only=production déprécié en npm 9+)
+RUN npm ci --omit=dev && npm cache clean --force
 
 # Copier le code source
 COPY --chown=nodejs:nodejs . .
@@ -2453,7 +2657,10 @@ request.end();
 
 **docker-compose.prod.yml**
 ```yaml
-version: '3.8'
+# ℹ️ Depuis Docker Compose v2 (2023), la clé `version:` est dépréciée et ignorée.
+#    Docker Compose v1 (Python) atteint sa fin de vie en juin 2023.
+#    Vous pouvez retirer cette ligne sur Docker Engine récent.
+version: '3.8'  # gardé pour compatibilité avec d'anciens runners CI
 
 services:
   api:
@@ -2543,8 +2750,16 @@ http {
     # Headers de sécurité
     add_header X-Frame-Options DENY always;
     add_header X-Content-Type-Options nosniff always;
-    add_header X-XSS-Protection "1; mode=block" always;
+    # ⚠️ X-XSS-Protection est DÉCONSEILLÉ par OWASP en 2024+ : le filtre XSS
+    #    des navigateurs (basé sur ce header) a été retiré de Chrome (≥ 78) et
+    #    Edge (≥ 79), et il peut introduire des vulnérabilités dans les
+    #    navigateurs qui l'implémentent encore. Préférez une Content-Security-Policy
+    #    stricte (frame-ancestors, default-src 'self', etc.).
+    # add_header X-XSS-Protection "1; mode=block" always;  # OBSOLÈTE
+    add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; base-uri 'none'" always;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
 
     server {
         listen 80;
@@ -2614,10 +2829,10 @@ set -e
 echo "🚀 Déploiement de l'API..."
 
 # Variables
-IMAGE_NAME="api-personnes"
-CONTAINER_NAME="api-personnes-prod"
-BACKUP_DIR="/backups"
-DATE=$(date +%Y%m%d_%H%M%S)
+IMAGE_NAME="api-personnes"  
+CONTAINER_NAME="api-personnes-prod"  
+BACKUP_DIR="/backups"  
+DATE=$(date +%Y%m%d_%H%M%S)  
 
 # Créer le dossier de sauvegarde
 mkdir -p $BACKUP_DIR
@@ -2625,21 +2840,28 @@ mkdir -p $BACKUP_DIR
 # Sauvegarder la base de données actuelle
 if [ -f "./data/database.db" ]; then
     echo "💾 Sauvegarde de la base de données..."
-    cp ./data/database.db $BACKUP_DIR/database_backup_$DATE.db
+    # ⚠️ NE PAS utiliser `cp` sur une base SQLite en cours d'utilisation :
+    #    si une transaction est en cours, vous obtenez un fichier corrompu
+    #    (cf. chapitre 6.4 sur la Backup API).
+    #    Utilisez la commande `.backup` du shell SQLite qui copie de façon
+    #    transactionnellement sûre, même base ouverte en écriture :
+    sqlite3 ./data/database.db ".backup '$BACKUP_DIR/database_backup_$DATE.db'"
+    # Alternative : si vous tournez avec Litestream, vos backups sont déjà
+    # continus dans S3 — pas besoin de snapshot manuel avant déploiement.
 fi
 
 # Construire la nouvelle image
-echo "🔨 Construction de l'image Docker..."
-docker build -t $IMAGE_NAME:latest .
+echo "🔨 Construction de l'image Docker..."  
+docker build -t $IMAGE_NAME:latest .  
 
 # Arrêter l'ancien conteneur
-echo "🛑 Arrêt de l'ancien conteneur..."
-docker stop $CONTAINER_NAME || true
-docker rm $CONTAINER_NAME || true
+echo "🛑 Arrêt de l'ancien conteneur..."  
+docker stop $CONTAINER_NAME || true  
+docker rm $CONTAINER_NAME || true  
 
 # Démarrer le nouveau conteneur
-echo "🏃 Démarrage du nouveau conteneur..."
-docker run -d \
+echo "🏃 Démarrage du nouveau conteneur..."  
+docker run -d \  
     --name $CONTAINER_NAME \
     --restart unless-stopped \
     -p 3000:3000 \
@@ -2649,8 +2871,8 @@ docker run -d \
     $IMAGE_NAME:latest
 
 # Vérifier que le conteneur démarre correctement
-echo "✅ Vérification du démarrage..."
-sleep 10
+echo "✅ Vérification du démarrage..."  
+sleep 10  
 
 if docker ps | grep -q $CONTAINER_NAME; then
     echo "✅ Déploiement réussi !"
@@ -2668,22 +2890,33 @@ else
 fi
 
 # Nettoyer les anciennes images
-echo "🧹 Nettoyage..."
-docker image prune -f
+echo "🧹 Nettoyage..."  
+docker image prune -f  
 
 echo "🎉 Déploiement terminé avec succès !"
 ```
 
 ### Monitoring avec PM2 (alternative à Docker)
 
-**ecosystem.config.js**
+> ⚠️ **PIÈGE MAJEUR — Cluster mode + SQLite ne font pas bon ménage** : la configuration historique de PM2 propose `instances: 'max'` + `exec_mode: 'cluster'` pour scaler sur tous les CPUs. Mais avec **SQLite, plusieurs processus écrivant sur le même fichier `.db` provoquent** :  
+> - des erreurs **"SQLITE_BUSY: database is locked"** dès qu'il y a de la concurrence,  
+> - et dans le pire des cas, **corruption de la base** si un processus crashe avec un fichier WAL/SHM dans un état inconsistant.  
+>  
+> **Règle d'or** : avec SQLite, **un seul processus écrit** à la fois sur la base. Pour scaler, vous avez deux options :  
+> 1. **Mode `fork` (un seul process)** : `instances: 1` + worker threads internes au process si besoin de parallélisme CPU sur des calculs.  
+> 2. **Architecture multi-process + base distribuée** : passez à Postgres/MySQL, ou utilisez **Turso/LibSQL** qui résout ce problème avec un serveur réseau frontal.
+
+**ecosystem.config.js (corrigé pour SQLite)**
 ```javascript
 module.exports = {
     apps: [{
         name: 'api-personnes',
         script: 'server.js',
-        instances: 'max', // Utilise tous les CPU disponibles
-        exec_mode: 'cluster',
+
+        // ⚠️ Un seul process en mode fork (PAS de cluster avec SQLite !)
+        instances: 1,
+        exec_mode: 'fork',
+
         env: {
             NODE_ENV: 'development',
             PORT: 3000
@@ -2713,6 +2946,12 @@ module.exports = {
     }]
 };
 ```
+
+> 💡 **« Mais comment je scale alors ? »** Si un seul process Node.js n'est pas assez :  
+> - **Mettez un reverse proxy devant** (Nginx, Caddy, HAProxy) pour gérer TLS et load-balancer **uniquement les lectures** vers des replicas créés via Litestream/LiteFS.  
+> - **Confiez les calculs CPU-intensifs aux Worker threads** Node.js (qui partagent le process).  
+> - **Découpez l'app en microservices** chacun avec sa propre base SQLite (sharding par domaine).  
+> - **Ou migrez la base** vers Postgres si la limite « un writer » devient bloquante.
 
 **Commandes PM2 utiles :**
 ```bash
@@ -2746,61 +2985,109 @@ pm2 startup
 ### Chiffrement des données sensibles
 
 **utils/encryption.js**
+
+> ⚠️ **Important — bugs corrigés par rapport à la version originelle de ce cours** :  
+> 1. `crypto.createCipher`/`createDecipher` ont été **supprimées de Node.js 22** (et étaient dépréciées depuis Node 10). De plus, elles **n'utilisaient pas l'IV** — c'était cryptographiquement faux. Il faut utiliser `createCipheriv`/`createDecipheriv`.  
+> 2. `pbkdf2Sync` avec `10 000` itérations est **bien trop faible** en 2026. OWASP recommande au minimum **600 000 itérations** pour PBKDF2-HMAC-SHA256, ou **210 000** pour SHA-512. Mieux encore : utilisez `argon2` ou `bcrypt`.  
+> 3. `crypto.randomBytes(32)` comme fallback de clé : si la variable d'environnement manque, une **nouvelle clé est générée à chaque démarrage**, rendant tous les chiffrés précédents illisibles. **Imposez** la présence de la variable.
+
 ```javascript
 const crypto = require('crypto');
 
 const ALGORITHM = 'aes-256-gcm';
-const SECRET_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32);
+
+// ⚠️ La clé de chiffrement DOIT venir de l'environnement (jamais de fallback).
+// Format attendu : 32 octets bruts en base64 ou hex
+function loadKey() {
+    const hex = process.env.ENCRYPTION_KEY_HEX;
+    if (!hex || hex.length !== 64) {
+        throw new Error(
+            "ENCRYPTION_KEY_HEX manquant ou invalide (32 octets = 64 caractères hex)\n" +
+            "  Générez une clé : node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""
+        );
+    }
+    return Buffer.from(hex, 'hex');
+}
+const SECRET_KEY = loadKey();
 
 class Encryption {
     static encrypt(text) {
-        const iv = crypto.randomBytes(16);
-        const cipher = crypto.createCipher(ALGORITHM, SECRET_KEY);
-        cipher.setAutoPadding(true);
+        // GCM exige un IV de 12 octets (96 bits) ; 16 fonctionne aussi mais 12 est l'optimum NIST
+        const iv = crypto.randomBytes(12);
 
-        let encrypted = cipher.update(text, 'utf8', 'hex');
-        encrypted += cipher.final('hex');
+        // ✅ createCipheriv passe explicitement clé + IV (correct cryptographiquement)
+        const cipher = crypto.createCipheriv(ALGORITHM, SECRET_KEY, iv);
+
+        const encrypted = Buffer.concat([
+            cipher.update(text, 'utf8'),
+            cipher.final()
+        ]);
 
         const authTag = cipher.getAuthTag();
 
         return {
-            encrypted,
-            iv: iv.toString('hex'),
-            authTag: authTag.toString('hex')
+            encrypted: encrypted.toString('base64'),
+            iv: iv.toString('base64'),
+            authTag: authTag.toString('base64')
         };
     }
 
-    static decrypt(encryptedData) {
-        const decipher = crypto.createDecipher(ALGORITHM, SECRET_KEY);
-        decipher.setAuthTag(Buffer.from(encryptedData.authTag, 'hex'));
+    static decrypt({ encrypted, iv, authTag }) {
+        const decipher = crypto.createDecipheriv(
+            ALGORITHM,
+            SECRET_KEY,
+            Buffer.from(iv, 'base64')
+        );
+        decipher.setAuthTag(Buffer.from(authTag, 'base64'));
 
-        let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'utf8');
-        decrypted += decipher.final('utf8');
+        const decrypted = Buffer.concat([
+            decipher.update(Buffer.from(encrypted, 'base64')),
+            decipher.final()  // ⚠️ lève une exception si authTag invalide → données altérées
+        ]);
 
-        return decrypted;
+        return decrypted.toString('utf8');
     }
 
+    // ✅ PBKDF2 avec 600 000 itérations (OWASP 2023 minimum pour SHA-256)
+    //    Pour SHA-512, OWASP recommande 210 000 itérations.
+    //    Encore mieux : utilisez `bcrypt` ou `argon2` (npm install argon2).
     static hashPassword(password) {
         const salt = crypto.randomBytes(16).toString('hex');
-        const hash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
-        return { hash, salt };
+        const hash = crypto.pbkdf2Sync(password, salt, 210000, 64, 'sha512').toString('hex');
+        return { hash, salt, iterations: 210000, algorithm: 'sha512' };
     }
 
-    static verifyPassword(password, hash, salt) {
-        const hashVerify = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
-        return hash === hashVerify;
+    static verifyPassword(password, hash, salt, iterations = 210000, algorithm = 'sha512') {
+        const candidate = crypto.pbkdf2Sync(password, salt, iterations, 64, algorithm).toString('hex');
+
+        // ✅ Comparaison à temps constant pour éviter les timing attacks
+        try {
+            return crypto.timingSafeEqual(
+                Buffer.from(hash, 'hex'),
+                Buffer.from(candidate, 'hex')
+            );
+        } catch {
+            return false;  // longueurs différentes → buffers incompatibles
+        }
     }
 }
 
 module.exports = Encryption;
 ```
 
+**Génération d'une clé de chiffrement (à faire une fois, sauvegarder dans `.env`)** :
+
+```bash
+# Sortie : une chaîne hex de 64 caractères à mettre dans ENCRYPTION_KEY_HEX
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
 ### Audit et logging des actions sensibles
 
 **middleware/audit.js**
 ```javascript
-const fs = require('fs').promises;
-const path = require('path');
+const fs = require('fs').promises;  
+const path = require('path');  
 
 class AuditLogger {
     constructor() {
@@ -2871,9 +3158,9 @@ module.exports = { auditLogger, auditAction };
 
 **middleware/security.js**
 ```javascript
-const rateLimit = require('express-rate-limit');
-const slowDown = require('express-slow-down');
-const MongoStore = require('rate-limit-mongo'); // Si vous utilisez MongoDB pour stocker les limites
+const rateLimit = require('express-rate-limit');  
+const slowDown = require('express-slow-down');  
+const MongoStore = require('rate-limit-mongo'); // Si vous utilisez MongoDB pour stocker les limites  
 
 // Protection contre les attaques par force brute
 const strictLimiter = rateLimit({
@@ -2920,7 +3207,19 @@ const validateHeaders = (req, res, next) => {
     next();
 };
 
-// Protection contre les injections
+// ⚠️ ANTIPATTERN : « sanitiser » l'entrée avec une liste noire de regex
+// donne un FAUX sentiment de sécurité. Les bonnes pratiques OWASP sont :
+//
+//   1. Pour les injections SQL : **requêtes paramétrées** (déjà fait via `?`).
+//   2. Pour les XSS : **échapper à la SORTIE** (au rendu HTML), pas à l'entrée.
+//      Stockez les données en l'état ; échappez seulement quand vous les
+//      insérez dans du HTML/JS via `escapeHtml()` ou un framework
+//      (React/Vue/Svelte échappent automatiquement).
+//   3. Pour les CSRF : **tokens anti-CSRF** (csurf, double-submit cookie).
+//
+// La fonction ci-dessous bloque des chaînes légitimes (ex. "function(x)" dans
+// une description de doc) et est facilement contournable par encoding. Elle
+// reste présentée à des fins pédagogiques mais N'EST PAS la bonne réponse.
 const sanitizeInput = (req, res, next) => {
     const dangerousPatterns = [
         /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi,
@@ -2998,14 +3297,14 @@ openssl genpkey -algorithm RSA -out ssl/private-key.pem -pkcs8 -aes256
 openssl req -new -x509 -key ssl/private-key.pem -out ssl/certificate.pem -days 365 \
     -subj "/C=FR/ST=Paris/L=Paris/O=Dev/OU=API/CN=localhost"
 
-echo "✅ Certificats générés dans le dossier ssl/"
-echo "⚠️  ATTENTION : Ces certificats sont pour le développement uniquement !"
+echo "✅ Certificats générés dans le dossier ssl/"  
+echo "⚠️  ATTENTION : Ces certificats sont pour le développement uniquement !"  
 ```
 
 **Configuration HTTPS dans server.js**
 ```javascript
-const https = require('https');
-const fs = require('fs');
+const https = require('https');  
+const fs = require('fs');  
 
 // Configuration HTTPS pour la production
 if (process.env.NODE_ENV === 'production' && process.env.ENABLE_HTTPS === 'true') {
@@ -3111,8 +3410,8 @@ artillery run load-test.yml
 artillery quick --duration 60 --rate 10 http://localhost:3000/api/health
 
 # Générer un rapport
-artillery run load-test.yml --output report.json
-artillery report report.json
+artillery run load-test.yml --output report.json  
+artillery report report.json  
 ```
 
 ### Optimisation des performances
@@ -3254,13 +3553,14 @@ module.exports = { cache, cacheMiddleware, invalidateCache };
 **scripts/backup.sh**
 ```bash
 #!/bin/bash
+set -euo pipefail   # stop sur erreur, variable non définie, ou échec dans un pipe
 
 # Configuration
-DB_PATH="${DATABASE_PATH:-./database.db}"
-BACKUP_DIR="${BACKUP_DIR:-./backups}"
-RETENTION_DAYS="${RETENTION_DAYS:-30}"
-DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_FILE="$BACKUP_DIR/database_backup_$DATE.db"
+DB_PATH="${DATABASE_PATH:-./database.db}"  
+BACKUP_DIR="${BACKUP_DIR:-./backups}"  
+RETENTION_DAYS="${RETENTION_DAYS:-30}"  
+DATE=$(date +%Y%m%d_%H%M%S)  
+BACKUP_FILE="$BACKUP_DIR/database_backup_$DATE.db"  
 
 # Créer le dossier de sauvegarde
 mkdir -p "$BACKUP_DIR"
@@ -3273,9 +3573,20 @@ if [ ! -f "$DB_PATH" ]; then
     exit 1
 fi
 
-# Créer la sauvegarde
-if cp "$DB_PATH" "$BACKUP_FILE"; then
+# ⚠️ NE PAS utiliser `cp` sur une base SQLite en cours d'utilisation :
+#    si une transaction est en cours, la copie peut être incohérente ou corrompue.
+#    On utilise la commande `.backup` du shell SQLite qui copie de façon
+#    transactionnellement sûre, même base ouverte en écriture (cf. chapitre 6.4).
+if sqlite3 "$DB_PATH" ".backup '$BACKUP_FILE'"; then
     echo "✅ Sauvegarde créée : $BACKUP_FILE"
+
+    # Vérifier l'intégrité de la copie AVANT de la compresser
+    if [ "$(sqlite3 "$BACKUP_FILE" 'PRAGMA integrity_check;')" != "ok" ]; then
+        echo "❌ Sauvegarde corrompue — abandon"
+        rm -f "$BACKUP_FILE"
+        exit 1
+    fi
+    echo "✅ Intégrité SQLite vérifiée (PRAGMA integrity_check = ok)"
 
     # Compresser la sauvegarde
     if gzip "$BACKUP_FILE"; then
@@ -3316,9 +3627,9 @@ fi
 
 **monitoring/system-monitor.js**
 ```javascript
-const os = require('os');
-const fs = require('fs').promises;
-const { execSync } = require('child_process');
+const os = require('os');  
+const fs = require('fs').promises;  
+const { execSync } = require('child_process');  
 
 class SystemMonitor {
     constructor() {
@@ -3455,10 +3766,10 @@ module.exports = SystemMonitor;
 ```javascript
 #!/usr/bin/env node
 
-const { execSync } = require('child_process');
-const fs = require('fs').promises;
-const path = require('path');
-const sqlite3 = require('sqlite3').verbose();
+const { execSync } = require('child_process');  
+const fs = require('fs').promises;  
+const path = require('path');  
+const sqlite3 = require('sqlite3').verbose();  
 
 class MaintenanceScript {
     constructor() {
@@ -3512,6 +3823,13 @@ class MaintenanceScript {
 
     async optimizeDatabase() {
         console.log('⚡ Optimisation de la base de données...');
+
+        // ⚠️ Précautions VACUUM :
+        //   • Réécrit la base entière → besoin de ~2× l'espace disque libre.
+        //   • Acquiert un verrou exclusif → bloque les autres connexions.
+        //   • Sur très grosses bases (> 10 Go), VACUUM peut prendre des heures.
+        //   • Préférez `PRAGMA incremental_vacuum` (avec `auto_vacuum = INCREMENTAL`
+        //     défini à la création de la base) pour des nettoyages partiels.
 
         return new Promise((resolve, reject) => {
             const db = new sqlite3.Database(this.dbPath);
@@ -3641,13 +3959,17 @@ module.exports = MaintenanceScript;
 - [ ] Validation des données à tous les niveaux
 
 **🔒 Sécurité**
-- [ ] Authentification JWT implémentée
-- [ ] Rate limiting configuré
-- [ ] Headers de sécurité (Helmet)
-- [ ] Validation et sanitisation des entrées
-- [ ] HTTPS en production
-- [ ] Audit des actions sensibles
-- [ ] Chiffrement des données sensibles
+- [ ] Authentification JWT implémentée (`algorithms: ['HS256']` explicite, secret ≥ 32 chars)
+- [ ] Rate limiting configuré (login + endpoints sensibles)
+- [ ] Headers de sécurité (Helmet, CSP, HSTS)
+- [ ] **Validation** des entrées (Joi/Zod) + **échappement à la SORTIE** (pas de "sanitize" sur l'entrée)
+- [ ] Requêtes paramétrées partout (jamais de concaténation SQL)
+- [ ] HTTPS en production + redirection HTTP → HTTPS
+- [ ] CORS restreint aux origines autorisées (pas `*`)
+- [ ] Mots de passe hashés avec bcrypt (cost ≥ 12) ou Argon2
+- [ ] Messages d'erreur génériques au client (pas de `str(e)` brut)
+- [ ] Audit des actions sensibles (login, modifications de rôles)
+- [ ] Chiffrement des données au repos (AES-256-GCM avec `createCipheriv`)
 
 **📊 Performance et monitoring**
 - [ ] Cache intelligent implémenté
@@ -3818,9 +4140,9 @@ class PersonneService {
 }
 
 // Injection de dépendances
-const db = new sqlite3.Database('app.db');
-const personneRepo = new SQLitePersonneRepository(db);
-const personneService = new PersonneService(personneRepo);
+const db = new sqlite3.Database('app.db');  
+const personneRepo = new SQLitePersonneRepository(db);  
+const personneService = new PersonneService(personneRepo);  
 ```
 
 ### Event Sourcing simple
@@ -4228,6 +4550,10 @@ class FullTextSearch {
     }
 
     createFTSTable() {
+        // Mode STANDALONE : la table FTS5 stocke les données indexées en interne.
+        // ⚠️ Cela DOUBLE l'espace disque (les données sont à la fois dans
+        //    `personnes` ET dans `personnes_fts`). Pour gros volume, préférez
+        //    le mode "external content" — voir chapitre 6.6 sur FTS5.
         this.db.run(`
             CREATE VIRTUAL TABLE IF NOT EXISTS personnes_fts USING fts5(
                 nom,
@@ -4236,7 +4562,10 @@ class FullTextSearch {
             )
         `);
 
-        // Trigger pour maintenir l'index FTS synchronisé
+        // Triggers de synchronisation
+        // En mode standalone, UPDATE/DELETE directs sur la table FTS5 sont OK
+        // (contrairement au mode "external content" qui requiert le pattern
+        //  INSERT INTO personnes_fts(personnes_fts, ...) VALUES('delete', ...)).
         this.db.run(`
             CREATE TRIGGER IF NOT EXISTS personnes_fts_insert AFTER INSERT ON personnes
             BEGIN
@@ -4311,6 +4640,144 @@ class FullTextSearch {
     }
 }
 ```
+
+## Alternatives modernes aux frameworks présentés
+
+Flask et Express restent solides et largement utilisés, mais l'écosystème 2024-2026 a vu émerger des frameworks **plus rapides, mieux typés, et avec génération automatique de documentation OpenAPI**. À considérer pour un nouveau projet :
+
+### Python — **FastAPI** (alternative recommandée à Flask)
+
+[FastAPI](https://fastapi.tiangolo.com/) combine validation Pydantic, typage Python natif, async/await, et **OpenAPI auto-généré** :
+
+```python
+# pip install fastapi uvicorn[standard] sqlmodel
+from fastapi import FastAPI, HTTPException  
+from sqlmodel import SQLModel, Field, Session, create_engine, select  
+
+# ⚠️ PIÈGE SQLModel important : un modèle avec `table=True` **ne valide
+#    PAS les champs comme requis** côté Pydantic — un POST avec un body
+#    incomplet passe la validation et explose plus tard avec une
+#    IntegrityError SQLite. La pratique recommandée est de séparer :
+#
+#    1. PersonneBase   : champs partagés (validation Pydantic stricte)
+#    2. Personne       : modèle BDD (hérite de Base + table=True)
+#    3. PersonneCreate : modèle d'entrée API (hérite de Base, sans id)
+#    4. PersonneRead   : modèle de sortie API (hérite de Base + id)
+
+class PersonneBase(SQLModel):
+    nom: str
+    age: int | None = None
+    email: str = Field(unique=True)
+
+class Personne(PersonneBase, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+
+class PersonneCreate(PersonneBase):
+    pass  # mêmes champs, mais SANS table=True → Pydantic valide bien les champs requis
+
+class PersonneRead(PersonneBase):
+    id: int
+
+engine = create_engine("sqlite:///app.db")  
+SQLModel.metadata.create_all(engine)  
+
+app = FastAPI()
+
+@app.post("/api/personnes", response_model=PersonneRead, status_code=201)
+def creer(personne_in: PersonneCreate):
+    # Conversion modèle d'entrée → modèle BDD
+    personne = Personne.model_validate(personne_in)
+    with Session(engine) as session:
+        session.add(personne)
+        session.commit()
+        session.refresh(personne)
+        return personne
+
+@app.get("/api/personnes/{person_id}", response_model=PersonneRead)
+def obtenir(person_id: int):
+    with Session(engine) as session:
+        personne = session.get(Personne, person_id)
+        if not personne:
+            raise HTTPException(status_code=404, detail="Personne non trouvée")
+        return personne
+
+# Lancement : uvicorn main:app --reload
+# Documentation auto : http://localhost:8000/docs (Swagger UI) ou /redoc
+```
+
+**Avantages vs Flask** : 5–10× plus rapide (basé sur Starlette/asyncio), validation Pydantic intégrée, doc OpenAPI gratuite, support natif async.
+
+> ⚠️ **Bug fréquent à connaître** : avec `class Personne(SQLModel, table=True)` utilisé directement comme body de requête, **un POST `{}` passe la validation Pydantic** et plante avec `IntegrityError: NOT NULL constraint failed` au niveau SQLite (statut 500). La séparation **Base / Table / Create / Read** ci-dessus garantit une validation 422 propre quand un champ requis manque. Voir la [doc officielle SQLModel](https://sqlmodel.tiangolo.com/tutorial/fastapi/multiple-models/).
+
+### Node.js — **Hono** ou **Fastify** (alternatives à Express)
+
+- **[Hono](https://hono.dev/)** : ultra-léger (~15 ko), compatible Node/Bun/Deno/Cloudflare Workers, type-safe TypeScript natif.
+  ```typescript
+  import { Hono } from 'hono';
+  const app = new Hono();
+  app.get('/api/personnes/:id', async (c) => {
+      const id = c.req.param('id');
+      // ... requête SQLite
+      return c.json({ id, nom: 'Alice' });
+  });
+  export default app;
+  ```
+- **[Fastify](https://fastify.dev/)** : ~2× plus rapide qu'Express, schemas JSON Schema natifs avec validation, plugins matures.
+- **[Elysia](https://elysiajs.com/)** : optimisé pour Bun, très haute performance, type-safety extrême via templates littéraux TypeScript.
+
+### Rust — **Axum** + **rusqlite**
+
+Pour des APIs ultra-performantes (10 000+ req/s sur un seul cœur) :
+
+```rust
+// Cargo.toml : axum = "0.8", tokio = { version = "1", features = ["full"] },
+//              rusqlite = "0.31", serde = { version = "1", features = ["derive"] }
+use axum::{Router, routing::get, Json, extract::Path, http::StatusCode};  
+use serde::Serialize;  
+
+#[derive(Serialize)]
+struct Personne { id: i64, nom: String, age: Option<i32> }
+
+// ⚠️ Axum 0.8 utilise la syntaxe `{id}` pour les paramètres de route
+//    (au lieu de `:id` dans les versions ≤ 0.7). Vérifiez votre version.
+async fn obtenir_personne(Path(id): Path<i64>) -> Result<Json<Personne>, StatusCode> {
+    // ... requête rusqlite (omise pour la concision)
+    Ok(Json(Personne { id, nom: "Alice".into(), age: Some(25) }))
+}
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new()
+        .route("/api/personnes/{id}", get(obtenir_personne));
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+### Go — **Chi** ou **Gin**
+
+```go
+// go get github.com/go-chi/chi/v5
+r := chi.NewRouter()  
+r.Get("/api/personnes/{id}", func(w http.ResponseWriter, r *http.Request) {  
+    id := chi.URLParam(r, "id")
+    // ... requête database/sql
+})
+http.ListenAndServe(":3000", r)
+```
+
+### Récapitulatif
+
+| Framework | Langage | Forces | Quand l'utiliser |
+|---|---|---|---|
+| **Flask** | Python | Mature, énorme écosystème, simple | Projets existants, équipes Python |
+| **FastAPI** | Python | Async natif, OpenAPI auto, validation Pydantic | **Nouveau projet Python** |
+| **Express** | Node | Standard de facto, simple | Projets existants, prototypes rapides |
+| **Hono** | TS / Bun / CF | Edge-ready, type-safe, ultra-léger | **Edge functions, Workers, projet récent** |
+| **Fastify** | Node | Performance + schémas JSON | Backend production critique |
+| **Axum** | Rust | Performance maximale, sûreté mémoire | Latence < 1 ms, charge élevée |
+| **Gin / Chi** | Go | Simplicité, déploiement facile | Microservices, container-friendly |
 
 ## Conclusion finale
 
