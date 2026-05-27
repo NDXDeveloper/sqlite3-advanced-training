@@ -23,6 +23,47 @@ Le planificateur SQLite fait exactement cela avec vos données : il trouve le ch
 3. **Estimation des coûts** : Il calcule combien de temps prendrait chaque option
 4. **Sélection du meilleur plan** : Il choisit la méthode la plus rapide
 
+### Visualisation : SCAN vs SEARCH
+
+Pour comprendre **pourquoi** un index accélère les recherches, voici la structure interne de SQLite côté table (séquentielle, triée par `rowid`) et côté index (B-tree trié par valeur).
+
+```
+TABLE produits (1 000 000 lignes, lecture séquentielle par rowid)
+
+   rowid │ nom          │ prix   │ categorie
+  ───────┼──────────────┼────────┼────────────
+      1  │ produit_1    │ 423.7  │ vetement
+      2  │ produit_2    │ 12.0   │ alimentaire
+      3  │ produit_3    │ 891.2  │ electronique     ← cherche !
+      4  │ produit_4    │ 156.8  │ meuble
+       ...                          ↑
+      N  │ produit_N    │  ...   │  ...        SCAN : lit TOUT, ligne par ligne
+
+
+INDEX idx_categorie ON produits(categorie)
+                                    │
+              Structure B-tree triée par 'categorie'
+                                    │
+                          ┌─────────┴─────────┐
+                          │   meuble (root)   │
+                          └─────────┬─────────┘
+                                    │
+                ┌───────────────────┼───────────────────┐
+                ▼                   ▼                   ▼
+        ┌───────────────┐   ┌───────────────┐   ┌───────────────┐
+        │ alimentaire   │   │ electronique  │   │ vetement      │
+        │  ↓ rowid=2    │   │  ↓ rowid=3    │   │  ↓ rowid=1    │
+        │  ↓ rowid=7    │   │  ↓ rowid=12   │   │  ↓ rowid=5    │
+        │  ...          │   │  ...          │   │  ...          │
+        └───────────────┘   └───────────────┘   └───────────────┘
+
+  SEARCH 'electronique' : descend l'arbre en log₂(N) sauts (≈ 20 sauts
+  pour 1 M lignes), puis lit directement les rowids correspondants.
+  → 100× à 1000× plus rapide qu'un SCAN sur grande table.
+```
+
+**Pourquoi log₂(N) ?** Un B-tree est un arbre **équilibré** : à chaque niveau on divise par 2 (ou par la « fan-out » du nœud, typiquement quelques dizaines à quelques centaines en SQLite). Donc même pour 1 milliard de lignes, on atteint la bonne entrée en ≈ 30 sauts, contre 1 milliard d'opérations pour un SCAN.
+
 ### Exemple simple
 
 Prenons cette requête basique :
@@ -32,7 +73,7 @@ SELECT nom, age FROM employes WHERE age > 30;
 
 Le planificateur peut choisir entre :
 - **Option 1** : Regarder tous les employés un par un (scan complet)
-- **Option 2** : Utiliser un index sur la colonne 'age' (si il existe)
+- **Option 2** : Utiliser un index sur la colonne `age` (s'il existe)
 
 ## Découvrir le plan d'exécution
 
@@ -41,8 +82,8 @@ Le planificateur peut choisir entre :
 Pour voir ce que fait le planificateur, utilisez `EXPLAIN QUERY PLAN` :
 
 ```sql
-EXPLAIN QUERY PLAN
-SELECT nom, age FROM employes WHERE age > 30;
+EXPLAIN QUERY PLAN  
+SELECT nom, age FROM employes WHERE age > 30;  
 ```
 
 **Résultat possible :**
@@ -76,8 +117,8 @@ INSERT INTO employes VALUES
 
 ```sql
 -- Requête sans index
-EXPLAIN QUERY PLAN
-SELECT * FROM employes WHERE age > 30;
+EXPLAIN QUERY PLAN  
+SELECT * FROM employes WHERE age > 30;  
 ```
 
 **Résultat :**
@@ -91,8 +132,8 @@ SCAN employes
 
 **Ce que c'est :** SQLite lit chaque ligne de la table
 ```sql
-EXPLAIN QUERY PLAN
-SELECT * FROM employes WHERE departement = 'IT';
+EXPLAIN QUERY PLAN  
+SELECT * FROM employes WHERE departement = 'IT';  
 ```
 **Résultat :** `SCAN employes`
 
@@ -110,8 +151,8 @@ SELECT * FROM employes WHERE departement = 'IT';
 CREATE INDEX idx_age ON employes(age);
 
 -- Même requête qu'avant
-EXPLAIN QUERY PLAN
-SELECT * FROM employes WHERE age > 30;
+EXPLAIN QUERY PLAN  
+SELECT * FROM employes WHERE age > 30;  
 ```
 
 **Résultat :** `SEARCH employes USING INDEX idx_age (age>?)`
@@ -133,17 +174,19 @@ INSERT INTO departements VALUES
 ('Finance', 75000);
 
 -- Requête avec jointure
-EXPLAIN QUERY PLAN
-SELECT e.nom, d.budget
-FROM employes e
-JOIN departements d ON e.departement = d.nom;
+EXPLAIN QUERY PLAN  
+SELECT e.nom, d.budget  
+FROM employes e  
+JOIN departements d ON e.departement = d.nom;  
 ```
 
 **Résultat possible :**
 ```
-SCAN e
-SEARCH d USING PRIMARY KEY (nom=?)
+|--SCAN e
+`--SEARCH d USING INDEX sqlite_autoindex_departements_1 (nom=?)
 ```
+
+> 💡 Le nom `sqlite_autoindex_departements_1` apparaît parce que `departements(nom)` est une `PRIMARY KEY` **non-INTEGER** : SQLite crée alors un **index automatique** pour la PK. Avec une `INTEGER PRIMARY KEY`, on verrait à la place `USING INTEGER PRIMARY KEY` (encore plus rapide — accès direct au ROWID, sans index séparé).
 
 ## Comment interpréter les plans d'exécution
 
@@ -157,14 +200,14 @@ SEARCH d USING PRIMARY KEY (nom=?)
 ### Exemple d'interprétation
 
 ```sql
-EXPLAIN QUERY PLAN
-SELECT nom FROM employes WHERE age BETWEEN 25 AND 35 ORDER BY nom;
+EXPLAIN QUERY PLAN  
+SELECT nom FROM employes WHERE age BETWEEN 25 AND 35 ORDER BY nom;  
 ```
 
 **Sans index sur age :**
 ```
-SCAN employes
-USE TEMP B-TREE FOR ORDER BY
+SCAN employes  
+USE TEMP B-TREE FOR ORDER BY  
 ```
 
 **Interprétation :**
@@ -174,13 +217,14 @@ USE TEMP B-TREE FOR ORDER BY
 
 **Avec index sur age :**
 ```sql
-CREATE INDEX idx_age ON employes(age);
+-- (`IF NOT EXISTS` car nous avons déjà créé `idx_age` plus haut dans le chapitre)
+CREATE INDEX IF NOT EXISTS idx_age ON employes(age);
 ```
 
 **Nouveau plan :**
 ```
-SEARCH employes USING INDEX idx_age (age>? AND age<?)
-USE TEMP B-TREE FOR ORDER BY
+SEARCH employes USING INDEX idx_age (age>? AND age<?)  
+USE TEMP B-TREE FOR ORDER BY  
 ```
 
 **Amélioration :** Moins de lignes à trier grâce au filtre par index !
@@ -189,16 +233,97 @@ USE TEMP B-TREE FOR ORDER BY
 
 ### 1. Statistiques des tables
 
-SQLite maintient des statistiques sur vos tables :
-```sql
--- Voir les statistiques
-PRAGMA table_info(employes);
+SQLite maintient des statistiques sur vos tables pour aider le planificateur à choisir entre `SCAN` et `SEARCH`. Elles ne sont **pas calculées automatiquement** : il faut lancer `ANALYZE`.
 
--- Mettre à jour les statistiques
-ANALYZE employes;
+```sql
+-- ⚠️ `PRAGMA table_info(employes)` retourne la STRUCTURE (colonnes, types),
+--    PAS les statistiques. Pour les vraies stats, c'est :
+ANALYZE employes;                       -- (re)calcule les stats  
+SELECT * FROM sqlite_stat1              -- stats par table/index :  
+WHERE tbl = 'employes';                 -- (nb_lignes, sélectivité…)  
+
+-- Optionnel : ANALYZE sans argument met à jour TOUTES les tables
+ANALYZE;
 ```
 
-**Important :** Des statistiques à jour = meilleurs plans !
+**Important :** Des statistiques à jour = meilleurs plans ! À relancer après de gros `INSERT`/`DELETE` (ne pas s'inquiéter : `ANALYZE` est rapide même sur de grandes bases).
+
+### Lire et comprendre `sqlite_stat1`
+
+Après `ANALYZE`, SQLite peuple une table système nommée **`sqlite_stat1`** que le planificateur consulte à chaque requête. Comprendre son contenu permet de **diagnostiquer pourquoi un plan choisi semble suboptimal**.
+
+**Format des stats :**
+```sql
+ANALYZE;  
+SELECT * FROM sqlite_stat1;  
+-- Exemple de sortie (table produits 1 M lignes, 5 catégories, ~10 000 prix distincts) :
+-- produits | idx_categorie  | 1000000 200000
+-- produits | idx_prix       | 1000000 100
+-- produits | idx_cat_prix   | 1000000 200000 20
+```
+
+**Décodage de la colonne `stat`** (format : `"N k1 k2 k3 ..."`) :
+- **`N`** : nombre total de lignes dans l'index.
+- **`k1`** : nombre **moyen** de lignes ayant la même valeur sur la **1ʳᵉ colonne** d'index (= 1 ⁄ sélectivité).
+- **`k2`** : nombre moyen de lignes ayant la même paire (col1, col2).
+- **`k3`, `k4`...** : idem pour les colonnes suivantes.
+
+```
+sqlite_stat1 décodé pour idx_cat_prix(categorie, prix) :
+
+   "1000000  200000     20"
+       │       │         │
+       │       │         └─► 20 lignes en moyenne par (categorie, prix)
+       │       │             → si on filtre les deux, on lit 20 lignes
+       │       │
+       │       └─► 200 000 lignes par catégorie (1 M ÷ 5 catégories)
+       │           → si on filtre par categorie seule, 200k lignes lues
+       │
+       └─► 1 000 000 lignes au total
+```
+
+**Pourquoi c'est utile :**
+- Si `k1` est **proche de N**, l'index a une **faible sélectivité** (peu de valeurs distinctes) → le planificateur pourrait préférer un SCAN.
+- Si `k1` est **petit** (1 à quelques dizaines), l'index est **très sélectif** → SEARCH est presque toujours gagnant.
+- Décide si un index composite mérite d'exister : si `k1 ≈ k2`, ajouter la 2ᵉ colonne n'apporte rien.
+
+### `sqlite_stat4` : stats par valeur (statistiques fines)
+
+`sqlite_stat1` ne stocke que des **moyennes**. Si une catégorie contient 800 000 lignes et les 4 autres 50 000 chacune, `sqlite_stat1` rapporte « 200 000 lignes par catégorie » — moyenne trompeuse qui peut conduire à un mauvais plan pour la grosse catégorie.
+
+**`sqlite_stat4`** (présent uniquement si SQLite est compilé avec **`SQLITE_ENABLE_STAT4`**) stocke des échantillons concrets de valeurs avec leur fréquence réelle, permettant des plans **différents selon la valeur** passée en paramètre.
+
+```sql
+-- Vérifier si sqlite_stat4 est disponible
+PRAGMA compile_options;
+-- Chercher ENABLE_STAT4 dans la liste ; si absent, sqlite_stat4 n'est pas créé.
+
+-- Si présent, après ANALYZE :
+SELECT tbl, idx, neq, nlt, ndlt, sample  
+FROM sqlite_stat4  
+WHERE tbl = 'produits'  
+LIMIT 5;  
+-- neq    = nombre de lignes égales à 'sample'
+-- nlt    = nombre de lignes strictement inférieures
+-- ndlt   = nombre de valeurs distinctes strictement inférieures
+-- sample = échantillon de valeur concrète (blob ou texte)
+```
+
+**Quand `sqlite_stat4` change la donne :**
+```sql
+-- Avec sqlite_stat1 seul :
+--   "categorie a 200 000 lignes en moyenne par valeur"
+--   → SQLite choisit le même plan pour categorie='electronique' et categorie='rare'
+
+-- Avec sqlite_stat4 :
+--   "categorie='electronique' = 800 000 lignes (SCAN gagnant)"
+--   "categorie='rare'         =  10 000 lignes (SEARCH gagnant)"
+--   → Plans différents selon la valeur ! 🎯
+```
+
+> ℹ️ **Activation de `SQLITE_ENABLE_STAT4`** : les **binaires officiels** distribués par sqlite.org (et la plupart des paquets Linux) **n'ont pas STAT4 activé** par défaut. Pour l'activer, il faut recompiler SQLite ou utiliser un binaire spécifique. Le coût en taille de base est modéré (quelques % de la taille des index). En général, `sqlite_stat1` suffit largement pour 95 % des cas.
+
+> ⚠️ **`analysis_limit` (SQLite 3.32+)** : sur de très grosses bases, `ANALYZE` peut être long. `PRAGMA analysis_limit = 1000;` limite le nombre d'échantillons consultés par index — plus rapide, légèrement moins précis. Recommandé en production pour les bases >1 Go.
 
 ### 2. Taille des données
 
@@ -214,38 +339,39 @@ CREATE TABLE grande_table (id INTEGER, nom TEXT);
 
 ### 3. Sélectivité des conditions
 
-**Condition très sélective :** (peu de résultats)
+**Condition très sélective :** (peu de résultats — souvent 1)
 ```sql
 SELECT * FROM employes WHERE id = 123;
--- → INDEX sera utilisé si disponible
+-- → Plan : SEARCH employes USING INTEGER PRIMARY KEY (rowid=?)
+-- (accès direct au rowid, encore plus rapide qu'un index classique)
 ```
 
 **Condition peu sélective :** (beaucoup de résultats)
 ```sql
 SELECT * FROM employes WHERE age IS NOT NULL;
--- → SCAN peut être plus rapide même avec un index
+-- → SCAN peut être plus rapide même avec un index, car parcourir l'index
+--   PUIS la table pour chaque ligne coûte plus cher qu'un seul SCAN.
 ```
 
 ## Exemples pratiques d'optimisation
 
 ### Problème : Requête lente
 
-```sql
--- Table avec 100 000 employés
-CREATE TABLE employes_large AS
-SELECT ... FROM ... ; -- Imaginez beaucoup de données
+```text
+-- Table illustrative avec 100 000 employés (à générer selon vos besoins)
+CREATE TABLE employes_large AS SELECT … FROM … ;   -- placeholder
 
--- Requête lente
-SELECT nom, salaire
-FROM employes_large
-WHERE departement = 'IT' AND age > 30;
+-- Requête lente sur cette grosse table
+SELECT nom, salaire  
+FROM employes_large  
+WHERE departement = 'IT' AND age > 30;  
 ```
 
 **Plan actuel :**
 ```sql
-EXPLAIN QUERY PLAN
-SELECT nom, salaire FROM employes_large
-WHERE departement = 'IT' AND age > 30;
+EXPLAIN QUERY PLAN  
+SELECT nom, salaire FROM employes_large  
+WHERE departement = 'IT' AND age > 30;  
 ```
 **Résultat :** `SCAN employes_large`
 
@@ -275,30 +401,47 @@ SEARCH employes_large USING INDEX idx_dept_age (departement=? AND age>?)
 **Mauvais :**
 ```sql
 SELECT * FROM employes WHERE UPPER(nom) = 'ALICE';
--- Plan : SCAN employes (index inutilisable)
+-- Plan : SCAN employes
+-- ⚠️ Même si un index `idx_nom ON employes(nom)` existait, il serait inutilisable :
+--    la fonction UPPER() transforme la colonne et bloque l'usage de l'index.
 ```
 
-**Bon :**
+**Bon — deux solutions :**
 ```sql
--- Stocker les noms en majuscules ou utiliser COLLATE NOCASE
-SELECT * FROM employes WHERE nom = 'Alice' COLLATE NOCASE;
+-- Solution A : INDEX sur l'expression UPPER(nom)
+CREATE INDEX idx_nom_upper ON employes(UPPER(nom));  
+SELECT * FROM employes WHERE UPPER(nom) = 'ALICE';  
+-- Plan : SEARCH employes USING INDEX idx_nom_upper
+
+-- Solution B : COLLATE NOCASE (insensible à la casse) — index DÉDIÉ requis
+CREATE INDEX idx_nom_nocase ON employes(nom COLLATE NOCASE);  
+SELECT * FROM employes WHERE nom = 'Alice' COLLATE NOCASE;  
+-- Plan : SEARCH employes USING INDEX idx_nom_nocase (nom=?)
 ```
 
-### 2. OR vs UNION
+> ⚠️ **Piège du COLLATE** : un index « normal » sur `nom` **n'est PAS utilisé** par une requête avec `COLLATE NOCASE` (et inversement). Les collations doivent correspondre exactement entre l'index et la requête, sinon SQLite fait un `SCAN`.
 
-**Moins efficace :**
+### 2. `OR` et l'optimisation `MULTI-INDEX OR`
+
+Quand un `OR` porte sur des **colonnes indexées** (ou la même colonne avec un index), SQLite sait depuis longtemps faire une **optimisation `MULTI-INDEX OR`** : il utilise chaque index séparément, puis fusionne les résultats. Pas besoin de réécrire en `UNION` :
+
 ```sql
-SELECT * FROM employes WHERE age < 25 OR age > 65;
--- Peut forcer un SCAN même avec index
+EXPLAIN QUERY PLAN  
+SELECT * FROM employes WHERE age < 25 OR age > 65;  
+-- Plan attendu (si idx_age existe) :
+--   MULTI-INDEX OR
+--   ├── SEARCH employes USING INDEX idx_age (age<?)
+--   └── SEARCH employes USING INDEX idx_age (age>?)
 ```
 
-**Plus efficace :**
-```sql
-SELECT * FROM employes WHERE age < 25
-UNION
-SELECT * FROM employes WHERE age > 65;
--- Peut utiliser l'index deux fois
-```
+> ⚠️ **Quand `OR` reste lent** : si **au moins une** des branches du `OR` n'a pas d'index utilisable, SQLite retombe sur un `SCAN` complet :  
+>
+> ```sql
+> -- Pas d'index sur 'commentaire' → SCAN forcé
+> SELECT * FROM employes WHERE age < 25 OR commentaire LIKE '%urgent%';
+> ```
+>  
+> Dans ce cas, réécrire en `UNION ALL` (et indexer chaque branche) **peut** aider — mais attention : `UNION` (sans `ALL`) introduit un `TEMP B-TREE` pour dédupliquer, ce qui peut coûter plus cher que le `SCAN` qu'on essayait d'éviter. Toujours mesurer avec `EXPLAIN QUERY PLAN` avant de réécrire.
 
 ### 3. ORDER BY et LIMIT
 
@@ -333,9 +476,9 @@ CREATE TABLE produits (
 
 3. Analysez ces requêtes :
 ```sql
-EXPLAIN QUERY PLAN SELECT * FROM produits WHERE prix > 100;
-EXPLAIN QUERY PLAN SELECT * FROM produits WHERE categorie = 'electronique';
-EXPLAIN QUERY PLAN SELECT * FROM produits ORDER BY prix DESC LIMIT 5;
+EXPLAIN QUERY PLAN SELECT * FROM produits WHERE prix > 100;  
+EXPLAIN QUERY PLAN SELECT * FROM produits WHERE categorie = 'electronique';  
+EXPLAIN QUERY PLAN SELECT * FROM produits ORDER BY prix DESC LIMIT 5;  
 ```
 
 ### Exercice 2 : Optimiser avec des index
@@ -352,16 +495,16 @@ EXPLAIN QUERY PLAN SELECT * FROM produits ORDER BY prix DESC LIMIT 5;
 - Ajoutez des index sur les colonnes de vos `WHERE`
 
 ### 2. Mesurez l'impact
-```sql
+```text
 .timer on
 -- Votre requête avant optimisation
-SELECT ... ;
+SELECT … ;
 
--- Créer l'index
-CREATE INDEX ... ;
+-- Créer l'index approprié
+CREATE INDEX … ;
 
 -- Même requête après optimisation
-SELECT ... ;
+SELECT … ;
 ```
 
 ### 3. N'optimisez pas prématurément
@@ -373,9 +516,9 @@ SELECT ... ;
 
 Le planificateur de requêtes SQLite :
 
-✅ **Choisit automatiquement** la meilleure façon d'exécuter vos requêtes
-✅ **Utilise les index** disponibles pour accélérer les recherches
-✅ **Peut être analysé** avec `EXPLAIN QUERY PLAN`
+✅ **Choisit automatiquement** la meilleure façon d'exécuter vos requêtes  
+✅ **Utilise les index** disponibles pour accélérer les recherches  
+✅ **Peut être analysé** avec `EXPLAIN QUERY PLAN`  
 ✅ **S'améliore** avec des statistiques à jour (`ANALYZE`)
 
 **Points clés à retenir :**
@@ -386,4 +529,4 @@ Le planificateur de requêtes SQLite :
 
 Dans la section suivante, nous verrons comment créer et gérer efficacement ces fameux index qui rendent vos requêtes si rapides !
 
-⏭️
+⏭️ [5.2 Création et gestion des index](/05-optimisation-performances/02-creation-gestion-index.md)
