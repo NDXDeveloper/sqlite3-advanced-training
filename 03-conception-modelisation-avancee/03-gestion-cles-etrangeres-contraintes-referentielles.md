@@ -12,7 +12,7 @@ Les clés étrangères sont comme les **liens de confiance** dans une communaut�
 - **Activation et configuration** des contraintes FK dans SQLite
 - **Actions référentielles** (CASCADE, SET NULL, RESTRICT, SET DEFAULT)
 - **Gestion des cycles** et dépendances complexes
-- **Strategies de migration** et maintenance des contraintes
+- **Stratégies de migration** et maintenance des contraintes
 - **Debugging et résolution** des problèmes FK
 
 ## Spécificités SQLite - Comprendre les différences
@@ -21,33 +21,34 @@ Les clés étrangères sont comme les **liens de confiance** dans une communaut�
 
 **Point crucial :** SQLite désactive les clés étrangères par défaut pour des raisons de compatibilité !
 
+Dans un terminal, on ouvre une base de test avec `sqlite3 test_fk.db`.
+
 ```sql
 -- ❌ État par défaut : FK désactivées
-sqlite3 test_fk.db
-PRAGMA foreign_keys;  -- Retourne 0 (désactivé)
+PRAGMA foreign_keys;  -- Retourne 0 (désactivé)  
 
 -- Tentative de violation sans protection
-CREATE TABLE parents (id INTEGER PRIMARY KEY, nom TEXT);
-CREATE TABLE enfants (
+CREATE TABLE parents (id INTEGER PRIMARY KEY, nom TEXT);  
+CREATE TABLE enfants (  
     id INTEGER PRIMARY KEY,
     nom TEXT,
     parent_id INTEGER,
     FOREIGN KEY (parent_id) REFERENCES parents(id)
 );
 
-INSERT INTO enfants VALUES (1, 'Alice', 999);  -- ✅ Accepté malgré parent inexistant !
-SELECT * FROM enfants;  -- Alice avec parent_id = 999 (inexistant)
+INSERT INTO enfants VALUES (1, 'Alice', 999);  -- ✅ Accepté malgré parent inexistant !  
+SELECT * FROM enfants;  -- Alice avec parent_id = 999 (inexistant)  
 
 -- ✅ Activation correcte
-PRAGMA foreign_keys = ON;
-PRAGMA foreign_keys;  -- Retourne 1 (activé)
+PRAGMA foreign_keys = ON;  
+PRAGMA foreign_keys;  -- Retourne 1 (activé)  
 
 -- Maintenant la protection fonctionne
 INSERT INTO enfants VALUES (2, 'Bob', 888);    -- ❌ Erreur : FK constraint failed
 
 -- Nettoyage pour les exemples suivants
-DROP TABLE enfants;
-DROP TABLE parents;
+DROP TABLE enfants;  
+DROP TABLE parents;  
 ```
 
 ### ⚠️ Activation par session
@@ -56,26 +57,25 @@ DROP TABLE parents;
 -- ⚠️ IMPORTANT : À faire à chaque connexion !
 PRAGMA foreign_keys = ON;
 
--- Vérification systématique dans vos scripts
-CREATE VIEW check_fk_status AS
+-- Vérification systématique dans vos scripts (commande directe — pas dans une VIEW
+-- car SQLite refuse l'usage des virtual tables PRAGMA dans une VIEW persistante).
 SELECT
     CASE
         WHEN (SELECT foreign_keys FROM pragma_foreign_keys()) = 1
         THEN '✅ Clés étrangères ACTIVÉES'
         ELSE '❌ Clés étrangères DÉSACTIVÉES - DANGER !'
     END as statut;
-
-SELECT * FROM check_fk_status;
 ```
 
 ## Configuration de base - Structure d'exemple
 
 Créons un système de gestion d'école complet pour explorer toutes les facettes des FK :
 
+Dans un terminal, on ouvre une nouvelle base avec `sqlite3 ecole_fk_complete.db`, puis on active les FK et on crée le schéma.
+
 ```sql
 -- === SYSTÈME D'ÉCOLE AVEC CONTRAINTES RÉFÉRENTIELLES ===
-sqlite3 ecole_fk_complete.db
-PRAGMA foreign_keys = ON;
+PRAGMA foreign_keys = ON;  
 
 -- 1. Entités de base (sans dépendances)
 CREATE TABLE departements (
@@ -256,8 +256,8 @@ CREATE TABLE tests_cascade_enfant (
 );
 
 -- Données de test
-INSERT INTO tests_cascade_parent VALUES (1, 'Parent A'), (2, 'Parent B');
-INSERT INTO tests_cascade_enfant VALUES
+INSERT INTO tests_cascade_parent VALUES (1, 'Parent A'), (2, 'Parent B');  
+INSERT INTO tests_cascade_enfant VALUES  
     (1, 1, 'Enfant 1-1'),
     (2, 1, 'Enfant 1-2'),
     (3, 2, 'Enfant 2-1');
@@ -278,8 +278,8 @@ SELECT 'Après modification parent 2→20' as moment,
 -- Résultat : parent_id de l'enfant 2-1 automatiquement mis à jour vers 20
 
 -- Nettoyage
-DROP TABLE tests_cascade_enfant;
-DROP TABLE tests_cascade_parent;
+DROP TABLE tests_cascade_enfant;  
+DROP TABLE tests_cascade_parent;  
 ```
 
 ### 🚫 RESTRICT - Protection stricte
@@ -307,13 +307,13 @@ FROM professeurs WHERE departement_id = 1;
 DELETE FROM niveaux_etude WHERE id = 5;  -- Supprimer M2
 
 -- Vérifier l'effet sur les cours
-SELECT nom, code, niveau_requis_id
-FROM cours
-WHERE niveau_requis_id IS NULL OR niveau_requis_id = 5;
+SELECT nom, code, niveau_requis_id  
+FROM cours  
+WHERE niveau_requis_id IS NULL OR niveau_requis_id = 5;  
 
 -- Réinsérer pour les tests suivants
-INSERT INTO niveaux_etude (id, nom, description)
-VALUES (5, 'M2', 'Deuxième année de master');
+INSERT INTO niveaux_etude (id, nom, description)  
+VALUES (5, 'M2', 'Deuxième année de master');  
 ```
 
 ### 🔄 SET DEFAULT - Valeur de fallback
@@ -334,16 +334,16 @@ CREATE TABLE cours_avec_default (
         ON DELETE SET DEFAULT
 );
 
-INSERT INTO categories_cours VALUES (1, 'Général', '#CCCCCC'), (2, 'Spécialisé', '#FF0000');
-INSERT INTO cours_avec_default VALUES (1, 'Cours test', 2);
+INSERT INTO categories_cours VALUES (1, 'Général', '#CCCCCC'), (2, 'Spécialisé', '#FF0000');  
+INSERT INTO cours_avec_default VALUES (1, 'Cours test', 2);  
 
 -- Test SET DEFAULT
-DELETE FROM categories_cours WHERE id = 2;
-SELECT * FROM cours_avec_default;  -- categorie_id revient à 1 (DEFAULT)
+DELETE FROM categories_cours WHERE id = 2;  
+SELECT * FROM cours_avec_default;  -- categorie_id revient à 1 (DEFAULT)  
 
 -- Nettoyage
-DROP TABLE cours_avec_default;
-DROP TABLE categories_cours;
+DROP TABLE cours_avec_default;  
+DROP TABLE categories_cours;  
 ```
 
 ## Gestion des cycles et dépendances complexes
@@ -352,17 +352,29 @@ DROP TABLE categories_cours;
 
 ```sql
 -- Problème classique : Employé ↔ Manager
+-- Si on veut interdire le NULL ET interdire l'auto-référence (un employé
+-- ne peut pas être son propre manager), on se retrouve coincé pour insérer
+-- le premier employé.
 CREATE TABLE employes_cyclique (
     id INTEGER PRIMARY KEY,
     nom TEXT,
-    manager_id INTEGER,
-    -- ❌ Problème : Comment insérer le premier employé ?
+    manager_id INTEGER NOT NULL,                  -- NULL interdit
+    CHECK (id != manager_id),                     -- auto-référence interdite
     FOREIGN KEY (manager_id) REFERENCES employes_cyclique(id)
 );
 
--- ❌ Impossible d'insérer car chaque employé nécessite un manager existant
--- INSERT INTO employes_cyclique VALUES (1, 'Directeur', 1);  -- Auto-référence
+-- ❌ Auto-référence interdite par le CHECK
+-- INSERT INTO employes_cyclique VALUES (1, 'Directeur', 1);
+-- Error: CHECK constraint failed
+
+-- ❌ Référence vers id inexistant
+-- INSERT INTO employes_cyclique VALUES (1, 'Directeur', 99);
+-- Error: FOREIGN KEY constraint failed
+
+-- → Sans NULL et sans auto-référence, **aucun premier employé ne peut être inséré**.
 ```
+
+> 💡 Sans la contrainte `CHECK (id != manager_id)`, l'auto-référence `(1, 'Directeur', 1)` est en réalité acceptée par SQLite : la FK est vérifiée *après* l'insertion de la ligne, donc `manager_id = 1` trouve bien `id = 1` dans la même table. C'est techniquement valide, mais sémantiquement bizarre (« un directeur qui est son propre manager »). Les solutions ci-dessous évitent ce détour.
 
 ### ✅ Solutions pour les cycles
 
@@ -383,8 +395,22 @@ INSERT INTO employes_solution1 VALUES
     (3, 'Chef équipe DB', 2),              -- Manager = Directeur IT
     (4, 'Développeur senior', 3);          -- Manager = Chef équipe
 
--- Solution 2 : DEFERRABLE (pas supporté par SQLite, simulation)
--- On peut utiliser des transactions pour gérer l'ordre d'insertion
+-- Solution 2 : Contraintes différées avec DEFERRABLE INITIALLY DEFERRED
+-- SQLite supporte les FK différées : la vérification a lieu au COMMIT,
+-- pas à chaque INSERT/UPDATE. Utile pour insérer un cycle dans une transaction.
+CREATE TABLE employes_deferre (
+    id INTEGER PRIMARY KEY,
+    nom TEXT,
+    manager_id INTEGER NOT NULL,
+    FOREIGN KEY (manager_id) REFERENCES employes_deferre(id)
+        DEFERRABLE INITIALLY DEFERRED
+);
+
+BEGIN;
+    -- À ce stade, la FK n'est PAS encore vérifiée
+    INSERT INTO employes_deferre VALUES (1, 'Directeur', 1);  -- self-ref OK
+    INSERT INTO employes_deferre VALUES (2, 'Manager', 1);
+COMMIT;  -- vérification effectuée ici : tout est cohérent
 
 -- Solution 3 : Tables séparées pour casser les cycles
 CREATE TABLE employes_base (
@@ -404,8 +430,8 @@ CREATE TABLE hierarchie_employes (
 );
 
 -- Insertion sans problème de cycle
-INSERT INTO employes_base VALUES (1, 'Alice', 'Directeur'), (2, 'Bob', 'Manager');
-INSERT INTO hierarchie_employes (employe_id, manager_id) VALUES (2, 1);  -- Bob managé par Alice
+INSERT INTO employes_base VALUES (1, 'Alice', 'Directeur'), (2, 'Bob', 'Manager');  
+INSERT INTO hierarchie_employes (employe_id, manager_id) VALUES (2, 1);  -- Bob managé par Alice  
 ```
 
 ### 🎯 Pattern pour dépendances complexes
@@ -429,25 +455,26 @@ INSERT INTO prerequis_cours VALUES
     (1, 4, 1),  -- BDD nécessite Python
     (3, 2, 1);  -- Mécanique quantique nécessite Algèbre
 
--- Requête pour vérifier les prérequis
-WITH RECURSIVE prerequis_complets AS (
-    -- Cours sans prérequis
-    SELECT c.id, c.nom, 0 as niveau_prerequis
-    FROM cours c
-    WHERE c.id NOT IN (SELECT cours_id FROM prerequis_cours)
-
+-- Requête pour calculer la profondeur de chaque cours dans la chaîne de prérequis
+-- ⚠️ SQLite n'autorise QU'UNE SEULE référence récursive au CTE.
+--    On simplifie : on calcule la profondeur maximale en suivant les arêtes
+--    cours → prérequis. Un cours peut apparaître plusieurs fois si plusieurs
+--    chemins y mènent — on prend le MAX par cours en fin de requête.
+WITH RECURSIVE chaine_prereq(cours_id, profondeur) AS (
+    -- Tous les cours partent à profondeur 0
+    SELECT id, 0 FROM cours
     UNION ALL
-
-    -- Cours avec prérequis déjà traités
-    SELECT c.id, c.nom, pc.niveau_prerequis + 1
-    FROM cours c
-    JOIN prerequis_cours p ON c.id = p.cours_id
-    JOIN prerequis_complets pc ON p.cours_prerequis_id = pc.id
-    WHERE c.id NOT IN (SELECT id FROM prerequis_complets)
+    -- Pour chaque arête (cours → prérequis), on descend d'un niveau
+    SELECT p.cours_id, c.profondeur + 1
+    FROM prerequis_cours p
+    JOIN chaine_prereq c ON p.cours_prerequis_id = c.cours_id
+    WHERE c.profondeur < 10  -- garde-fou anti-cycle
 )
-SELECT nom, niveau_prerequis
-FROM prerequis_complets
-ORDER BY niveau_prerequis, nom;
+SELECT c.nom, MAX(cp.profondeur) AS niveau_prerequis  
+FROM chaine_prereq cp  
+JOIN cours c ON c.id = cp.cours_id  
+GROUP BY c.id, c.nom  
+ORDER BY niveau_prerequis, c.nom;  
 ```
 
 ## Diagnostic et debugging des contraintes
@@ -459,8 +486,8 @@ ORDER BY niveau_prerequis, nom;
 PRAGMA foreign_keys;
 
 -- 2. Lister toutes les contraintes FK d'une table
-PRAGMA foreign_key_list(cours);
-PRAGMA foreign_key_list(inscriptions);
+PRAGMA foreign_key_list(cours);  
+PRAGMA foreign_key_list(inscriptions);  
 
 -- 3. Vérifier l'intégrité référentielle globale
 PRAGMA foreign_key_check;
@@ -471,33 +498,33 @@ PRAGMA foreign_key_check(inscriptions);
 -- 5. Détecter les violations actuelles (si FK désactivées)
 SELECT 'Professeurs orphelins' as probleme,
        COUNT(*) as nombre
-FROM professeurs p
-LEFT JOIN departements d ON p.departement_id = d.id
-WHERE d.id IS NULL
+FROM professeurs p  
+LEFT JOIN departements d ON p.departement_id = d.id  
+WHERE d.id IS NULL  
 
 UNION ALL
 
 SELECT 'Étudiants sans niveau',
        COUNT(*)
-FROM etudiants e
-LEFT JOIN niveaux_etude n ON e.niveau_id = n.id
-WHERE n.id IS NULL
+FROM etudiants e  
+LEFT JOIN niveaux_etude n ON e.niveau_id = n.id  
+WHERE n.id IS NULL  
 
 UNION ALL
 
 SELECT 'Cours sans professeur',
        COUNT(*)
-FROM cours c
-LEFT JOIN professeurs p ON c.professeur_responsable_id = p.id
-WHERE p.id IS NULL
+FROM cours c  
+LEFT JOIN professeurs p ON c.professeur_responsable_id = p.id  
+WHERE p.id IS NULL  
 
 UNION ALL
 
 SELECT 'Inscriptions orphelines (étudiants)',
        COUNT(*)
-FROM inscriptions i
-LEFT JOIN etudiants e ON i.etudiant_id = e.id
-WHERE e.id IS NULL;
+FROM inscriptions i  
+LEFT JOIN etudiants e ON i.etudiant_id = e.id  
+WHERE e.id IS NULL;  
 ```
 
 ### 🚨 Résolution des violations
@@ -516,49 +543,70 @@ CREATE TABLE violations_fk (
 PRAGMA foreign_keys = OFF;  -- Désactiver temporairement
 
 -- Créer des données problématiques
-INSERT INTO cours (nom, code, credits, professeur_responsable_id, departement_id)
-VALUES ('Cours orphelin', 'ORPH999', 3, 999, 999);
+INSERT INTO cours (nom, code, credits, professeur_responsable_id, departement_id)  
+VALUES ('Cours orphelin', 'ORPH999', 3, 999, 999);  
 
-INSERT INTO inscriptions (etudiant_id, cours_id, semestre, annee_universitaire)
-VALUES (999, 1, 'S1', '2024-2025');
+INSERT INTO inscriptions (etudiant_id, cours_id, semestre, annee_universitaire)  
+VALUES (999, 1, 'S1', '2024-2025');  
 
 PRAGMA foreign_keys = ON;   -- Réactiver
 
 -- Identifier les violations
-INSERT INTO violations_fk
-SELECT
+INSERT INTO violations_fk  
+SELECT  
     'cours' as table_source,
     rowid,
     'professeurs' as table_cible,
     'professeur_responsable_id' as fk_column,
     'Professeur inexistant: ' || professeur_responsable_id
-FROM cours
-WHERE professeur_responsable_id NOT IN (SELECT id FROM professeurs);
+FROM cours  
+WHERE professeur_responsable_id NOT IN (SELECT id FROM professeurs);  
 
 -- Stratégies de réparation
--- Option 1 : Supprimer les enregistrements invalides
-DELETE FROM cours
-WHERE professeur_responsable_id NOT IN (SELECT id FROM professeurs);
+-- ⚠️ Les trois options ci-dessous sont **ALTERNATIVES** : choisissez UNE
+--    seule approche selon le contexte métier. Les exécuter à la suite
+--    n'aurait pas de sens (Option 1 supprime les lignes, donc Option 2 et 3
+--    n'auraient plus rien à corriger ou à créer).
 
--- Option 2 : Corriger les références
-UPDATE cours
-SET professeur_responsable_id = 1  -- Assigner à un professeur valide
-WHERE professeur_responsable_id NOT IN (SELECT id FROM professeurs);
+-- Option 1 : SUPPRIMER les enregistrements invalides
+--   → À privilégier si les données orphelines sont des « déchets » sans valeur.
+DELETE FROM cours  
+WHERE professeur_responsable_id NOT IN (SELECT id FROM professeurs);  
 
--- Option 3 : Créer les enregistrements manquants
-INSERT INTO professeurs (id, nom, prenom, departement_id)
-SELECT DISTINCT
+-- Option 2 : CORRIGER les références vers un enregistrement valide existant
+--   → À privilégier si on peut raisonnablement réassigner (ex: département
+--     « par défaut » connu).
+UPDATE cours  
+SET professeur_responsable_id = 1  -- Assigner à un professeur valide  
+WHERE professeur_responsable_id NOT IN (SELECT id FROM professeurs);  
+
+-- Option 3 : CRÉER les enregistrements manquants côté parent
+--   → À privilégier si les références orphelines contiennent en réalité
+--     des données valides qu'on veut conserver, et qu'il manque juste
+--     la fiche parente.
+INSERT INTO professeurs (id, nom, prenom, departement_id)  
+SELECT DISTINCT  
     professeur_responsable_id,
     'Professeur inconnu',
     'ID ' || professeur_responsable_id,
     1  -- Département par défaut
-FROM cours
-WHERE professeur_responsable_id NOT IN (SELECT id FROM professeurs);
+FROM cours  
+WHERE professeur_responsable_id NOT IN (SELECT id FROM professeurs);  
 ```
 
 ## Migration et maintenance des contraintes
 
 ### 🔄 Ajouter des FK à une base existante
+
+> 💡 **Procédure recommandée par SQLite** (voir [doc officielle](https://www.sqlite.org/lang_altertable.html#otheralter)) : pour modifier une contrainte FK existante ou en ajouter une, la séquence sécurisée est :  
+> 1. `PRAGMA foreign_keys = OFF;` — désactive temporairement la vérification (évite que des FK externes ne bloquent le `DROP TABLE`).  
+> 2. `BEGIN TRANSACTION;`  
+> 3. Créer la nouvelle table, copier les données, `DROP TABLE` l'ancienne, `RENAME` la nouvelle.  
+> 4. `PRAGMA foreign_key_check;` — vérifie l'intégrité avant de valider.  
+> 5. `COMMIT;`  
+> 6. `PRAGMA foreign_keys = ON;` — réactive.  
+>  
+> Dans l'exemple ci-dessous, on suppose qu'aucune autre table ne pointe vers `migration_enfants`, donc on omet l'étape 1. Sur une vraie base, l'étape 1 est indispensable.
 
 ```sql
 -- Situation : Base existante sans FK
@@ -574,8 +622,8 @@ CREATE TABLE migration_enfants (
 );
 
 -- Données existantes (potentiellement problématiques)
-INSERT INTO migration_test VALUES (1, 'Parent 1'), (2, 'Parent 2');
-INSERT INTO migration_enfants VALUES
+INSERT INTO migration_test VALUES (1, 'Parent 1'), (2, 'Parent 2');  
+INSERT INTO migration_enfants VALUES  
     (1, 1, 'OK'),
     (2, 2, 'OK'),
     (3, 999, 'PROBLÈME');  -- Référence vers parent inexistant
@@ -584,12 +632,12 @@ INSERT INTO migration_enfants VALUES
 BEGIN TRANSACTION;
 
 -- 1. Identifier et nettoyer les violations
-CREATE TABLE enfants_invalides AS
-SELECT * FROM migration_enfants
-WHERE parent_id NOT IN (SELECT id FROM migration_test);
+CREATE TABLE enfants_invalides AS  
+SELECT * FROM migration_enfants  
+WHERE parent_id NOT IN (SELECT id FROM migration_test);  
 
-DELETE FROM migration_enfants
-WHERE parent_id NOT IN (SELECT id FROM migration_test);
+DELETE FROM migration_enfants  
+WHERE parent_id NOT IN (SELECT id FROM migration_test);  
 
 -- 2. Créer nouvelle table avec FK
 CREATE TABLE migration_enfants_new (
@@ -601,12 +649,12 @@ CREATE TABLE migration_enfants_new (
 );
 
 -- 3. Migrer les données valides
-INSERT INTO migration_enfants_new
-SELECT * FROM migration_enfants;
+INSERT INTO migration_enfants_new  
+SELECT * FROM migration_enfants;  
 
 -- 4. Remplacer l'ancienne table
-DROP TABLE migration_enfants;
-ALTER TABLE migration_enfants_new RENAME TO migration_enfants;
+DROP TABLE migration_enfants;  
+ALTER TABLE migration_enfants_new RENAME TO migration_enfants;  
 
 COMMIT;
 
@@ -615,6 +663,8 @@ PRAGMA foreign_key_check(migration_enfants);
 ```
 
 ### 🔧 Modification des actions référentielles
+
+> 💡 La **même procédure 6 étapes** (cf. section précédente) s'applique : sur une vraie base partagée, encadrer `BEGIN` ↔ `COMMIT` par `PRAGMA foreign_keys = OFF;` ↔ `PRAGMA foreign_keys = ON;` et faire un `PRAGMA foreign_key_check;` avant de valider.
 
 ```sql
 -- Impossible de modifier directement les actions FK dans SQLite
@@ -644,16 +694,16 @@ CREATE TABLE inscriptions_new (
 );
 
 -- 2. Copier les données
-INSERT INTO inscriptions_new
-SELECT * FROM inscriptions;
+INSERT INTO inscriptions_new  
+SELECT * FROM inscriptions;  
 
 -- 3. Recréer les index si nécessaire
-CREATE INDEX idx_inscriptions_new_etudiant ON inscriptions_new(etudiant_id);
-CREATE INDEX idx_inscriptions_new_cours ON inscriptions_new(cours_id);
+CREATE INDEX idx_inscriptions_new_etudiant ON inscriptions_new(etudiant_id);  
+CREATE INDEX idx_inscriptions_new_cours ON inscriptions_new(cours_id);  
 
 -- 4. Remplacer
-DROP TABLE inscriptions;
-ALTER TABLE inscriptions_new RENAME TO inscriptions;
+DROP TABLE inscriptions;  
+ALTER TABLE inscriptions_new RENAME TO inscriptions;  
 
 COMMIT;
 ```
@@ -670,12 +720,12 @@ COMMIT;
 .indexes
 
 -- Créer des index pour optimiser les FK
-CREATE INDEX idx_professeurs_departement ON professeurs(departement_id);
-CREATE INDEX idx_etudiants_niveau ON etudiants(niveau_id);
-CREATE INDEX idx_cours_professeur ON cours(professeur_responsable_id);
-CREATE INDEX idx_cours_departement ON cours(departement_id);
-CREATE INDEX idx_inscriptions_etudiant ON inscriptions(etudiant_id);
-CREATE INDEX idx_inscriptions_cours ON inscriptions(cours_id);
+CREATE INDEX idx_professeurs_departement ON professeurs(departement_id);  
+CREATE INDEX idx_etudiants_niveau ON etudiants(niveau_id);  
+CREATE INDEX idx_cours_professeur ON cours(professeur_responsable_id);  
+CREATE INDEX idx_cours_departement ON cours(departement_id);  
+CREATE INDEX idx_inscriptions_etudiant ON inscriptions(etudiant_id);  
+CREATE INDEX idx_inscriptions_cours ON inscriptions(cours_id);  
 
 -- Index composites pour requêtes fréquentes
 CREATE INDEX idx_inscriptions_semestre_annee
@@ -704,20 +754,30 @@ CREATE TABLE test_avec_fk (
 );
 
 -- Mesurer les insertions
-INSERT INTO test_sans_fk
-SELECT value, value % 1000, 'donnee' || value
-FROM generate_series(1, 10000);
+-- ⚠️ `generate_series` n'est pas activé par défaut sur tous les builds SQLite.
+--    On utilise une CTE récursive pour rester portable.
+WITH RECURSIVE serie(value) AS (
+    SELECT 1
+    UNION ALL
+    SELECT value + 1 FROM serie WHERE value < 10000
+)
+INSERT INTO test_sans_fk  
+SELECT value, value % 1000, 'donnee' || value FROM serie;  
 
-INSERT INTO test_avec_fk
-SELECT value, (value % 2) + 1, 'donnee' || value
-FROM generate_series(1, 10000);
+WITH RECURSIVE serie(value) AS (
+    SELECT 1
+    UNION ALL
+    SELECT value + 1 FROM serie WHERE value < 10000
+)
+INSERT INTO test_avec_fk  
+SELECT value, (value % 2) + 1, 'donnee' || value FROM serie;  
 
 .timer OFF
 
 -- Analyser les plans d'exécution
-EXPLAIN QUERY PLAN
-SELECT * FROM test_avec_fk t1
-JOIN migration_test t2 ON t1.parent_id = t2.id;
+EXPLAIN QUERY PLAN  
+SELECT * FROM test_avec_fk t1  
+JOIN migration_test t2 ON t1.parent_id = t2.id;  
 ```
 
 ## Patterns avancés avec FK
@@ -739,6 +799,7 @@ CREATE TABLE commentaires (
     article_id INTEGER NOT NULL,
     contenu TEXT,
     supprime INTEGER DEFAULT 0,
+    date_suppression TEXT,  -- horodatage du soft delete (NULL si encore actif)
 
     -- FK vers article (même supprimé)
     FOREIGN KEY (article_id) REFERENCES articles(id)
@@ -746,14 +807,14 @@ CREATE TABLE commentaires (
 );
 
 -- Vue pour articles "actifs"
-CREATE VIEW articles_actifs AS
-SELECT * FROM articles WHERE supprime = 0;
+CREATE VIEW articles_actifs AS  
+SELECT * FROM articles WHERE supprime = 0;  
 
 -- Trigger pour soft delete en cascade
-CREATE TRIGGER soft_delete_article
-AFTER UPDATE ON articles
-WHEN NEW.supprime = 1 AND OLD.supprime = 0
-BEGIN
+CREATE TRIGGER soft_delete_article  
+AFTER UPDATE ON articles  
+WHEN NEW.supprime = 1 AND OLD.supprime = 0  
+BEGIN  
     UPDATE commentaires
     SET supprime = 1, date_suppression = datetime('now')
     WHERE article_id = NEW.id AND supprime = 0;
@@ -762,11 +823,20 @@ END;
 
 ### 🔄 Versioning avec FK
 
+> ⚠️ **Contrainte SQLite** : une `FOREIGN KEY` doit cibler **la PRIMARY KEY** ou une colonne avec **contrainte UNIQUE** de la table parent. Tenter de référencer une colonne non unique produit l'erreur `foreign key mismatch`. Pour un pattern de versioning où l'ID logique du document doit rester stable, on sépare donc l'identité du document de ses versions.
+
 ```sql
 -- Pattern : Versioning d'entités avec FK stables
+-- Table 1 : identité stable du document (PK = ID logique)
+CREATE TABLE documents (
+    id INTEGER PRIMARY KEY,
+    nom_logique TEXT
+);
+
+-- Table 2 : versions successives (FK vers documents.id)
 CREATE TABLE documents_versions (
     id INTEGER PRIMARY KEY,
-    document_id INTEGER NOT NULL,  -- ID stable du document
+    document_id INTEGER NOT NULL,  -- FK vers documents.id (l'ID stable)
     version INTEGER NOT NULL,
     titre TEXT,
     contenu TEXT,
@@ -774,25 +844,25 @@ CREATE TABLE documents_versions (
     date_creation TEXT DEFAULT (datetime('now')),
 
     UNIQUE (document_id, version),
-    CHECK (actuel IN (0, 1))
+    CHECK (actuel IN (0, 1)),
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
 );
 
+-- Table 3 : permissions (FK vers documents.id, l'ID stable)
 CREATE TABLE permissions_documents (
     user_id INTEGER,
     document_id INTEGER,  -- Référence l'ID stable, pas la version
     permission TEXT,
 
     PRIMARY KEY (user_id, document_id),
-    -- FK vers l'ID stable (pas vers documents_versions.id)
-    FOREIGN KEY (document_id) REFERENCES documents_versions(document_id)
-        ON DELETE CASCADE
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
 );
 
--- Trigger pour maintenir une seule version actuelle
-CREATE TRIGGER version_actuelle_unique
-BEFORE UPDATE ON documents_versions
-WHEN NEW.actuel = 1 AND OLD.actuel = 0
-BEGIN
+-- Trigger pour maintenir une seule version actuelle par document
+CREATE TRIGGER version_actuelle_unique  
+BEFORE UPDATE ON documents_versions  
+WHEN NEW.actuel = 1 AND OLD.actuel = 0  
+BEGIN  
     UPDATE documents_versions
     SET actuel = 0
     WHERE document_id = NEW.document_id AND actuel = 1;
@@ -888,16 +958,19 @@ CREATE TABLE bon_exemple_2 (
 PRAGMA foreign_keys;  -- Toujours vérifier !
 
 -- ❌ ANTI-PATTERN 4 : Cycles non gérés
+-- Combiné à une CHECK interdisant l'auto-référence, on ne peut plus insérer
+-- aucune ligne (cf. section « Problème des références circulaires » plus haut).
 CREATE TABLE employes_mauvais (
     id INTEGER PRIMARY KEY,
-    manager_id INTEGER NOT NULL,  -- ❌ Impossible d'insérer le premier !
+    manager_id INTEGER NOT NULL,
+    CHECK (id != manager_id),
     FOREIGN KEY (manager_id) REFERENCES employes_mauvais(id)
 );
 
 -- ✅ CORRECT : Permettre NULL pour casser le cycle
 CREATE TABLE employes_bon (
     id INTEGER PRIMARY KEY,
-    manager_id INTEGER,  -- NULL = pas de manager
+    manager_id INTEGER,  -- NULL = pas de manager (cas du directeur)
     FOREIGN KEY (manager_id) REFERENCES employes_bon(id)
 );
 ```
@@ -908,7 +981,8 @@ CREATE TABLE employes_bon (
 -- === SCRIPTS DE MAINTENANCE AUTOMATISÉE ===
 
 -- 1. Vérification quotidienne de l'intégrité
-CREATE VIEW rapport_integrite_quotidien AS
+-- ⚠️ SQLite refuse l'usage des virtual tables PRAGMA dans une VIEW persistante
+--    (« unsafe use of virtual table »). On utilise donc une requête directe.
 SELECT
     datetime('now') as date_verification,
     'foreign_key_check' as test,
@@ -929,8 +1003,8 @@ CREATE TABLE audit_performance_fk (
 );
 
 -- Procédure pour remplir l'audit (simulée)
-INSERT INTO audit_performance_fk (table_name, fk_column, has_index, row_count)
-SELECT
+INSERT INTO audit_performance_fk (table_name, fk_column, has_index, row_count)  
+SELECT  
     'inscriptions' as table_name,
     'etudiant_id' as fk_column,
     CASE WHEN EXISTS (
@@ -950,8 +1024,7 @@ SELECT
     ) THEN 1 ELSE 0 END,
     (SELECT COUNT(*) FROM inscriptions);
 
--- 3. Détection automatique des FK manquantes
-CREATE VIEW fk_manquantes_detectees AS
+-- 3. Détection automatique des FK manquantes (requête directe, pas dans une VIEW)
 SELECT
     'professeurs' as table_source,
     'departement_id' as colonne_fk,
@@ -978,8 +1051,7 @@ SELECT
 ```sql
 -- === BOÎTE À OUTILS DE DEBUGGING FK ===
 
--- 1. Fonction pour analyser une violation FK
-CREATE VIEW debug_fk_violations AS
+-- 1. Analyse d'une violation FK (requête directe — les VIEWs avec pragma_* sont interdites)
 WITH violations AS (
     SELECT
         "table" as table_name,
@@ -997,16 +1069,16 @@ SELECT
 FROM violations v;
 
 -- 2. Analyseur de cardinalités FK
-CREATE VIEW analyse_cardinalites_fk AS
-SELECT
+CREATE VIEW analyse_cardinalites_fk AS  
+SELECT  
     'etudiants → inscriptions' as relation,
     COUNT(DISTINCT e.id) as entites_parent,
     COUNT(i.id) as entites_enfant,
     ROUND(CAST(COUNT(i.id) AS REAL) / COUNT(DISTINCT e.id), 2) as ratio_moyen,
     MAX(nb_inscriptions) as max_par_parent
-FROM etudiants e
-LEFT JOIN inscriptions i ON e.id = i.etudiant_id
-LEFT JOIN (
+FROM etudiants e  
+LEFT JOIN inscriptions i ON e.id = i.etudiant_id  
+LEFT JOIN (  
     SELECT etudiant_id, COUNT(*) as nb_inscriptions
     FROM inscriptions
     GROUP BY etudiant_id
@@ -1020,16 +1092,15 @@ SELECT
     COUNT(i.id),
     ROUND(CAST(COUNT(i.id) AS REAL) / COUNT(DISTINCT c.id), 2),
     MAX(nb_inscriptions)
-FROM cours c
-LEFT JOIN inscriptions i ON c.id = i.cours_id
-LEFT JOIN (
+FROM cours c  
+LEFT JOIN inscriptions i ON c.id = i.cours_id  
+LEFT JOIN (  
     SELECT cours_id, COUNT(*) as nb_inscriptions
     FROM inscriptions
     GROUP BY cours_id
 ) stats ON c.id = stats.cours_id;
 
--- 3. Générateur de script de réparation
-CREATE VIEW scripts_reparation_fk AS
+-- 3. Générateur de script de réparation (requête directe, pas dans une VIEW)
 SELECT
     'DELETE FROM ' || "table" || ' WHERE rowid = ' || rowid || ';' as script_suppression,
     'UPDATE ' || "table" || ' SET fk_column = NULL WHERE rowid = ' || rowid || ';' as script_nullify,
@@ -1037,37 +1108,20 @@ SELECT
     rowid as ligne_problematique
 FROM pragma_foreign_key_check();
 
--- 4. Détecteur de patterns problématiques
-CREATE VIEW patterns_problematiques AS
+-- 4. Détecteur de patterns problématiques (requête directe)
+-- Tables avec colonnes `*_id` mais sans FK déclarée.
+-- ⚠️ Le `_` est un wildcard LIKE : on l'échappe avec ESCAPE pour matcher
+--    le vrai caractère underscore (sinon `(id ` matcherait aussi).
 SELECT
-    'Tables sans FK mais avec colonnes *_id' as pattern,
+    'Tables avec colonnes *_id mais sans FK déclarée' as pattern,
     COUNT(*) as occurrences,
     'Probable FK manquante' as recommandation
-FROM (
-    SELECT name FROM sqlite_master WHERE type='table'
-    AND sql LIKE '%_id %'
-    AND name NOT IN (
-        SELECT DISTINCT "table" FROM pragma_foreign_key_list(name)
-    )
-)
-
-UNION ALL
-
-SELECT
-    'FK sans index correspondant',
-    COUNT(*),
-    'Créer index pour performance'
-FROM (
-    SELECT DISTINCT fkl."table", fkl."from"
-    FROM sqlite_master sm
-    CROSS JOIN pragma_foreign_key_list(sm.name) fkl
-    WHERE sm.type = 'table'
-    AND NOT EXISTS (
-        SELECT 1 FROM sqlite_master idx
-        WHERE idx.type = 'index'
-        AND idx.sql LIKE '%' || fkl."from" || '%'
-    )
-);
+FROM sqlite_master sm  
+WHERE sm.type = 'table'  
+  AND sm.sql LIKE '%\_id %' ESCAPE '\'
+  AND NOT EXISTS (
+      SELECT 1 FROM pragma_foreign_key_list(sm.name)
+  );
 ```
 
 ### 🎯 Exercice pratique complet - Système de e-commerce
@@ -1076,9 +1130,8 @@ FROM (
 -- === EXERCICE FINAL : E-COMMERCE AVEC FK COMPLEXES ===
 
 -- Objectif : Créer un système e-commerce complet avec toutes les FK bien configurées
-
-sqlite3 ecommerce_fk_complet.db
-PRAGMA foreign_keys = ON;
+-- Ouvrir une nouvelle base depuis le shell : `sqlite3 ecommerce_fk_complet.db`
+PRAGMA foreign_keys = ON;  
 
 -- 1. Entités de base
 CREATE TABLE regions (
@@ -1114,18 +1167,23 @@ CREATE TABLE adresses (
     ville TEXT NOT NULL,
     code_postal TEXT NOT NULL,
     region_id INTEGER,
-    defaut INTEGER DEFAULT 0,
+    defaut INTEGER DEFAULT 0 CHECK (defaut IN (0, 1)),
 
     -- FK avec différentes actions
     FOREIGN KEY (utilisateur_id) REFERENCES utilisateurs(id)
         ON DELETE CASCADE,  -- Supprimer adresses si utilisateur supprimé
     FOREIGN KEY (region_id) REFERENCES regions(id)
-        ON DELETE SET NULL,  -- Région peut être supprimée, adresse reste
-
-    -- Contrainte : une seule adresse par défaut par utilisateur et type
-    UNIQUE (utilisateur_id, type_adresse, defaut)
-    CHECK (defaut IN (0, 1))
+        ON DELETE SET NULL  -- Région peut être supprimée, adresse reste
 );
+
+-- ⚠️ Contrainte « une seule adresse par défaut par utilisateur et type » :
+--    une simple UNIQUE(utilisateur_id, type_adresse, defaut) ne suffit PAS car
+--    elle interdit aussi d'avoir 2 adresses non-défaut du même type.
+--    La bonne approche en SQLite est un INDEX UNIQUE PARTIEL qui ne s'applique
+--    qu'aux lignes où defaut = 1.
+CREATE UNIQUE INDEX idx_adresse_defaut_unique
+    ON adresses(utilisateur_id, type_adresse)
+    WHERE defaut = 1;
 
 -- 3. Produits avec relations complexes
 CREATE TABLE fournisseurs (
@@ -1277,14 +1335,23 @@ INSERT INTO lignes_commande (commande_id, produit_id, quantite, prix_unitaire_ht
 PRAGMA foreign_key_check;
 
 -- 2. Tester les cascades
+-- ⚠️ Pour tester `adresses ON DELETE CASCADE` proprement, il faut un utilisateur
+-- **sans commande**. Les utilisateurs 1 et 2 ont chacun une commande, et
+-- `commandes(utilisateur_id) REFERENCES utilisateurs(id) ON DELETE RESTRICT`
+-- bloquerait alors la suppression avant même que la cascade sur `adresses`
+-- ne puisse s'appliquer.
 BEGIN TRANSACTION;
 
--- Test CASCADE : Supprimer utilisateur doit supprimer ses adresses
-SELECT COUNT(*) as adresses_avant FROM adresses WHERE utilisateur_id = 2;
-DELETE FROM utilisateurs WHERE id = 2;
-SELECT COUNT(*) as adresses_apres FROM adresses WHERE utilisateur_id = 2;
+-- Créer un utilisateur jetable avec uniquement une adresse, sans commande
+INSERT INTO utilisateurs (email, nom, prenom) VALUES ('test@example.com', 'Test', 'Charlie');  
+INSERT INTO adresses (utilisateur_id, type_adresse, rue, ville, code_postal, defaut)  
+VALUES (last_insert_rowid(), 'domicile', '1 rue Test', 'Lyon', '69000', 1);  
 
-ROLLBACK;  -- Annuler pour garder les données
+SELECT COUNT(*) as adresses_avant FROM adresses WHERE utilisateur_id = (SELECT id FROM utilisateurs WHERE email = 'test@example.com');  
+DELETE FROM utilisateurs WHERE email = 'test@example.com';  -- CASCADE supprime l'adresse  
+SELECT COUNT(*) as adresses_apres FROM adresses WHERE utilisateur_id = (SELECT id FROM utilisateurs WHERE email = 'test@example.com');  
+
+ROLLBACK;  -- Annuler pour garder les données initiales
 
 -- 3. Tester RESTRICT : Impossible de supprimer produit avec commandes
 DELETE FROM produits WHERE id = 1;  -- ❌ Doit échouer
@@ -1296,24 +1363,24 @@ SELECT
     s.nom as statut,
     COUNT(lc.id) as nb_articles,
     SUM(lc.quantite * lc.prix_unitaire_ht * (1 + lc.tva_taux)) as total_ttc
-FROM utilisateurs u
-JOIN commandes c ON u.id = c.utilisateur_id
-JOIN statuts_commande s ON c.statut_id = s.id
-LEFT JOIN lignes_commande lc ON c.id = lc.commande_id
-GROUP BY u.id, c.id
-ORDER BY c.date_commande DESC;
+FROM utilisateurs u  
+JOIN commandes c ON u.id = c.utilisateur_id  
+JOIN statuts_commande s ON c.statut_id = s.id  
+LEFT JOIN lignes_commande lc ON c.id = lc.commande_id  
+GROUP BY u.id, c.id  
+ORDER BY c.date_commande DESC;  
 
 -- 5. Vérifier les contraintes métier
 -- Tentative de créer deux adresses par défaut du même type (doit échouer)
-INSERT INTO adresses (utilisateur_id, type_adresse, rue, ville, code_postal, defaut)
-VALUES (1, 'domicile', 'Autre rue', 'Paris', '75002', 1);  -- ❌ Doit échouer
+INSERT INTO adresses (utilisateur_id, type_adresse, rue, ville, code_postal, defaut)  
+VALUES (1, 'domicile', 'Autre rue', 'Paris', '75002', 1);  -- ❌ Doit échouer  
 
 -- === TRIGGERS POUR MAINTENIR L'INTÉGRITÉ ===
 
 -- Trigger pour calculer automatiquement les totaux
-CREATE TRIGGER calculer_totaux_ligne
-AFTER INSERT ON lignes_commande
-BEGIN
+CREATE TRIGGER calculer_totaux_ligne  
+AFTER INSERT ON lignes_commande  
+BEGIN  
     UPDATE lignes_commande SET
         total_ligne_ht = quantite * prix_unitaire_ht,
         total_ligne_tva = quantite * prix_unitaire_ht * tva_taux,
@@ -1329,10 +1396,10 @@ BEGIN
 END;
 
 -- Trigger pour valider les transitions de statut
-CREATE TRIGGER valider_transition_statut
-BEFORE UPDATE ON commandes
-WHEN OLD.statut_id != NEW.statut_id
-BEGIN
+CREATE TRIGGER valider_transition_statut  
+BEFORE UPDATE ON commandes  
+WHEN OLD.statut_id != NEW.statut_id  
+BEGIN  
     SELECT CASE
         WHEN NEW.statut_id <= OLD.statut_id AND NEW.statut_id != 6 THEN  -- Sauf annulation
             RAISE(ABORT, 'Transition de statut invalide')
@@ -1431,4 +1498,4 @@ FROM quiz_fk_maitrise;
 
 **🎯 Vous maîtrisez maintenant** les clés étrangères SQLite comme un expert ! Vos bases de données sont désormais robustes, cohérentes et évolutives.
 
-⏭️
+⏭️ [3.4 Triggers : création, types et cas d'usage](/03-conception-modelisation-avancee/04-triggers-creation-types-cas-usage.md)

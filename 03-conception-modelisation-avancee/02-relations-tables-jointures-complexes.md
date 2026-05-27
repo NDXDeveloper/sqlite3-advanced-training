@@ -18,10 +18,11 @@ Les relations entre tables sont le **cœur battant** d'une base de données rela
 
 Reprenons notre système d'école du chapitre précédent pour explorer les relations :
 
+Dans un terminal, on ouvre une nouvelle base avec `sqlite3 ecole_relations.db`, puis on active les contraintes FK et on crée les tables.
+
 ```sql
 -- Base d'exemple pour les relations
-sqlite3 ecole_relations.db
-PRAGMA foreign_keys = ON;
+PRAGMA foreign_keys = ON;  
 
 -- Tables de base (version simplifiée)
 CREATE TABLE departements (
@@ -125,8 +126,8 @@ SELECT
     dp.situation_familiale,
     dp.bourse_montant,
     dp.contact_urgence_nom
-FROM etudiants e
-LEFT JOIN dossiers_personnels dp ON e.id = dp.etudiant_id;
+FROM etudiants e  
+LEFT JOIN dossiers_personnels dp ON e.id = dp.etudiant_id;  
 ```
 
 ### 🔍 Particularités du 1:1
@@ -140,14 +141,14 @@ SELECT
     COUNT(*) as nb_etudiants,
     COUNT(DISTINCT dp.etudiant_id) as nb_dossiers,
     COUNT(*) - COUNT(DISTINCT dp.etudiant_id) as etudiants_sans_dossier
-FROM etudiants e
-LEFT JOIN dossiers_personnels dp ON e.id = dp.etudiant_id;
+FROM etudiants e  
+LEFT JOIN dossiers_personnels dp ON e.id = dp.etudiant_id;  
 
 -- Aucun dossier orphelin (sans étudiant)
-SELECT COUNT(*) as dossiers_orphelins
-FROM dossiers_personnels dp
-LEFT JOIN etudiants e ON dp.etudiant_id = e.id
-WHERE e.id IS NULL;
+SELECT COUNT(*) as dossiers_orphelins  
+FROM dossiers_personnels dp  
+LEFT JOIN etudiants e ON dp.etudiant_id = e.id  
+WHERE e.id IS NULL;  
 ```
 
 ### ⚠️ Alternatives au 1:1
@@ -201,15 +202,15 @@ SELECT
     d.nom as departement,
     COUNT(p.id) as nb_professeurs,
     GROUP_CONCAT(p.nom || ' ' || p.prenom, ', ') as liste_professeurs
-FROM departements d
-LEFT JOIN professeurs p ON d.id = p.departement_id
-GROUP BY d.id, d.nom
-ORDER BY nb_professeurs DESC;
+FROM departements d  
+LEFT JOIN professeurs p ON d.id = p.departement_id  
+GROUP BY d.id, d.nom  
+ORDER BY nb_professeurs DESC;  
 
 -- Professeurs sans département (orphelins)
-SELECT COUNT(*) as professeurs_sans_departement
-FROM professeurs
-WHERE departement_id IS NULL;
+SELECT COUNT(*) as professeurs_sans_departement  
+FROM professeurs  
+WHERE departement_id IS NULL;  
 ```
 
 ### 🔧 Patterns avancés One-to-Many
@@ -248,11 +249,11 @@ SELECT
     COUNT(n.id) as nb_notes,
     AVG(n.note) as moyenne_simple,
     SUM(n.note * n.coefficient) / SUM(n.coefficient) as moyenne_ponderee
-FROM etudiants e
-JOIN notes n ON e.id = n.etudiant_id
-JOIN cours c ON n.cours_id = c.id
-GROUP BY e.id, c.id
-ORDER BY moyenne_ponderee DESC;
+FROM etudiants e  
+JOIN notes n ON e.id = n.etudiant_id  
+JOIN cours c ON n.cours_id = c.id  
+GROUP BY e.id, c.id  
+ORDER BY moyenne_ponderee DESC;  
 ```
 
 ### 📊 Pattern hiérarchique (Self-Referencing)
@@ -283,11 +284,15 @@ SELECT
     e.poste,
     COALESCE(m.nom || ' ' || m.prenom, 'Aucun manager') as manager,
     e.salaire
-FROM employes e
-LEFT JOIN employes m ON e.manager_id = m.id
-ORDER BY e.salaire DESC;
+FROM employes e  
+LEFT JOIN employes m ON e.manager_id = m.id  
+ORDER BY e.salaire DESC;  
 
 -- Requête récursive : Toute la hiérarchie
+-- ⚠️ Le `WHERE h.niveau < 10` est un **garde-fou anti-cycle** : si les données
+--    contenaient une boucle (A manage B et B manage A), la récursion boucleraient
+--    indéfiniment avec `UNION ALL`. La limite arrête la propagation après 10
+--    niveaux de profondeur, ce qui suffit largement pour un organigramme réaliste.
 WITH RECURSIVE hierarchie_employes AS (
     -- Niveau racine (directeur)
     SELECT id, nom, prenom, poste, manager_id, 0 as niveau, nom as chemin
@@ -301,13 +306,14 @@ WITH RECURSIVE hierarchie_employes AS (
            h.chemin || ' > ' || e.nom
     FROM employes e
     JOIN hierarchie_employes h ON e.manager_id = h.id
+    WHERE h.niveau < 10                      -- garde-fou anti-cycle
 )
 SELECT
     SUBSTR('        ', 1, niveau * 2) || nom || ' ' || prenom as organisation,
     poste,
     niveau
-FROM hierarchie_employes
-ORDER BY chemin;
+FROM hierarchie_employes  
+ORDER BY chemin;  
 ```
 
 ## Relation Many-to-Many (N:M) - Plusieurs vers plusieurs
@@ -354,8 +360,8 @@ INSERT INTO inscriptions (etudiant_id, cours_id, date_inscription, statut, note_
     (4, 2, '2024-02-10', 'abandonne', NULL);    -- Thomas → Python (abandonné)
 
 -- Index pour optimiser les requêtes Many-to-Many
-CREATE INDEX idx_inscriptions_etudiant ON inscriptions(etudiant_id);
-CREATE INDEX idx_inscriptions_cours ON inscriptions(cours_id);
+CREATE INDEX idx_inscriptions_etudiant ON inscriptions(etudiant_id);  
+CREATE INDEX idx_inscriptions_cours ON inscriptions(cours_id);  
 ```
 
 ### 🔍 Requêtes Many-to-Many
@@ -371,11 +377,11 @@ SELECT
         c.nom || ' (' || i.statut || ')',
         ', '
     ) as cours_details
-FROM etudiants e
-LEFT JOIN inscriptions i ON e.id = i.etudiant_id
-LEFT JOIN cours c ON i.cours_id = c.id
-GROUP BY e.id
-ORDER BY nb_cours_actifs DESC;
+FROM etudiants e  
+LEFT JOIN inscriptions i ON e.id = i.etudiant_id  
+LEFT JOIN cours c ON i.cours_id = c.id  
+GROUP BY e.id  
+ORDER BY nb_cours_actifs DESC;  
 
 -- Vue "cours" : Quels étudiants suivent chaque cours ?
 SELECT
@@ -385,11 +391,11 @@ SELECT
     COUNT(i.etudiant_id) as nb_etudiants_inscrits,
     COUNT(CASE WHEN i.statut = 'actif' THEN 1 END) as nb_etudiants_actifs,
     AVG(CASE WHEN i.note_finale IS NOT NULL THEN i.note_finale END) as moyenne_cours
-FROM cours c
-JOIN professeurs p ON c.professeur_id = p.id
-LEFT JOIN inscriptions i ON c.id = i.cours_id
-GROUP BY c.id
-ORDER BY nb_etudiants_actifs DESC;
+FROM cours c  
+JOIN professeurs p ON c.professeur_id = p.id  
+LEFT JOIN inscriptions i ON c.id = i.cours_id  
+GROUP BY c.id  
+ORDER BY nb_etudiants_actifs DESC;  
 
 -- Requête croisée : Matrice étudiants-cours
 SELECT
@@ -398,10 +404,10 @@ SELECT
     MAX(CASE WHEN c.nom = 'Programmation Python' THEN i.statut END) as Python,
     MAX(CASE WHEN c.nom = 'Algèbre linéaire' THEN i.statut END) as Maths,
     MAX(CASE WHEN c.nom = 'Mécanique quantique' THEN i.statut END) as Physique
-FROM etudiants e
-LEFT JOIN inscriptions i ON e.id = i.etudiant_id
-LEFT JOIN cours c ON i.cours_id = c.id
-GROUP BY e.id, e.nom;
+FROM etudiants e  
+LEFT JOIN inscriptions i ON e.id = i.etudiant_id  
+LEFT JOIN cours c ON i.cours_id = c.id  
+GROUP BY e.id, e.nom;  
 ```
 
 ### 🔧 Patterns avancés Many-to-Many
@@ -493,10 +499,10 @@ SELECT
     s.capacite,
     cs.jour_semaine,
     cs.heure_debut
-FROM cours c
-INNER JOIN cours_salles cs ON c.id = cs.cours_id
-INNER JOIN salles s ON cs.salle_id = s.id
-ORDER BY cs.jour_semaine, cs.heure_debut;
+FROM cours c  
+INNER JOIN cours_salles cs ON c.id = cs.cours_id  
+INNER JOIN salles s ON cs.salle_id = s.id  
+ORDER BY cs.jour_semaine, cs.heure_debut;  
 -- Résultat : 3 lignes (cours de Physique exclu car pas de salle)
 ```
 
@@ -509,17 +515,17 @@ SELECT
     c.code,
     COALESCE(s.nom, 'Aucune salle') as salle,
     COALESCE(cs.jour_semaine, 'Non programmé') as planning
-FROM cours c
-LEFT JOIN cours_salles cs ON c.id = cs.cours_id
-LEFT JOIN salles s ON cs.salle_id = s.id
-ORDER BY c.nom;
+FROM cours c  
+LEFT JOIN cours_salles cs ON c.id = cs.cours_id  
+LEFT JOIN salles s ON cs.salle_id = s.id  
+ORDER BY c.nom;  
 -- Résultat : 4 lignes (cours de Physique inclus avec NULL)
 
 -- Cours sans salle assignée
-SELECT c.nom, c.code
-FROM cours c
-LEFT JOIN cours_salles cs ON c.id = cs.cours_id
-WHERE cs.cours_id IS NULL;
+SELECT c.nom, c.code  
+FROM cours c  
+LEFT JOIN cours_salles cs ON c.id = cs.cours_id  
+WHERE cs.cours_id IS NULL;  
 ```
 
 ### 🔗 Jointures multiples et complexes
@@ -533,13 +539,13 @@ SELECT
     d.nom as departement,
     i.statut as statut_inscription,
     COALESCE(i.note_finale, 'En cours') as note
-FROM etudiants e
-JOIN inscriptions i ON e.id = i.etudiant_id
-JOIN cours c ON i.cours_id = c.id
-JOIN professeurs p ON c.professeur_id = p.id
-JOIN departements d ON p.departement_id = d.id
-WHERE i.statut IN ('actif', 'termine')
-ORDER BY d.nom, c.nom, e.nom;
+FROM etudiants e  
+JOIN inscriptions i ON e.id = i.etudiant_id  
+JOIN cours c ON i.cours_id = c.id  
+JOIN professeurs p ON c.professeur_id = p.id  
+JOIN departements d ON p.departement_id = d.id  
+WHERE i.statut IN ('actif', 'termine')  
+ORDER BY d.nom, c.nom, e.nom;  
 
 -- Statistiques multi-niveaux
 SELECT
@@ -548,12 +554,12 @@ SELECT
     COUNT(DISTINCT p.id) as nb_professeurs,
     COUNT(DISTINCT i.etudiant_id) as nb_etudiants_inscrits,
     AVG(i.note_finale) as moyenne_generale_dept
-FROM departements d
-LEFT JOIN professeurs p ON d.id = p.departement_id
-LEFT JOIN cours c ON p.id = c.professeur_id
-LEFT JOIN inscriptions i ON c.id = i.cours_id AND i.note_finale IS NOT NULL
-GROUP BY d.id, d.nom
-ORDER BY nb_etudiants_inscrits DESC;
+FROM departements d  
+LEFT JOIN professeurs p ON d.id = p.departement_id  
+LEFT JOIN cours c ON p.id = c.professeur_id  
+LEFT JOIN inscriptions i ON c.id = i.cours_id AND i.note_finale IS NOT NULL  
+GROUP BY d.id, d.nom  
+ORDER BY nb_etudiants_inscrits DESC;  
 ```
 
 ### 🎯 Sous-requêtes dans les jointures
@@ -576,18 +582,18 @@ SELECT
     me.moyenne,
     me.nb_cours_termines,
     RANK() OVER (ORDER BY me.moyenne DESC) as rang
-FROM etudiants e
-JOIN moyennes_etudiants me ON e.id = me.etudiant_id
-ORDER BY me.moyenne DESC;
+FROM etudiants e  
+JOIN moyennes_etudiants me ON e.id = me.etudiant_id  
+ORDER BY me.moyenne DESC;  
 
 -- Jointure avec EXISTS : Professeurs ayant des étudiants actifs
 SELECT DISTINCT
     p.nom || ' ' || p.prenom as professeur,
     p.email,
     d.nom as departement
-FROM professeurs p
-JOIN departements d ON p.departement_id = d.id
-WHERE EXISTS (
+FROM professeurs p  
+JOIN departements d ON p.departement_id = d.id  
+WHERE EXISTS (  
     SELECT 1
     FROM cours c
     JOIN inscriptions i ON c.id = i.cours_id
@@ -602,30 +608,37 @@ WHERE EXISTS (
 
 ```sql
 -- Index essentiels pour les clés étrangères
-CREATE INDEX idx_professeurs_departement ON professeurs(departement_id);
-CREATE INDEX idx_cours_professeur ON cours(professeur_id);
-CREATE INDEX idx_notes_etudiant ON notes(etudiant_id);
-CREATE INDEX idx_notes_cours ON notes(cours_id);
+CREATE INDEX idx_professeurs_departement ON professeurs(departement_id);  
+CREATE INDEX idx_cours_professeur ON cours(professeur_id);  
+CREATE INDEX idx_notes_etudiant ON notes(etudiant_id);  
+CREATE INDEX idx_notes_cours ON notes(cours_id);  
 
 -- Index composites pour requêtes fréquentes
-CREATE INDEX idx_inscriptions_statut_date ON inscriptions(statut, date_inscription);
-CREATE INDEX idx_notes_cours_date ON notes(cours_id, date_evaluation);
+CREATE INDEX idx_inscriptions_statut_date ON inscriptions(statut, date_inscription);  
+CREATE INDEX idx_notes_cours_date ON notes(cours_id, date_evaluation);  
 
 -- Vérifier l'utilisation des index
-EXPLAIN QUERY PLAN
-SELECT c.nom, p.nom, COUNT(i.etudiant_id)
-FROM cours c
-JOIN professeurs p ON c.professeur_id = p.id
-LEFT JOIN inscriptions i ON c.id = i.cours_id
-GROUP BY c.id;
+EXPLAIN QUERY PLAN  
+SELECT c.nom, p.nom, COUNT(i.etudiant_id)  
+FROM cours c  
+JOIN professeurs p ON c.professeur_id = p.id  
+LEFT JOIN inscriptions i ON c.id = i.cours_id  
+GROUP BY c.id;  
 ```
 
 ### 📊 Analyse de performance des jointures
 
 ```sql
 -- Créer des données de test plus volumineuses
-INSERT INTO etudiants (nom, prenom, numero_etudiant, niveau)
-SELECT
+-- ⚠️ `generate_series` n'est PAS toujours activé sur tous les builds SQLite
+--    (extension optionnelle). Pour rester portable, on utilise une CTE récursive.
+WITH RECURSIVE serie(value) AS (
+    SELECT 5
+    UNION ALL
+    SELECT value + 1 FROM serie WHERE value < 1000
+)
+INSERT INTO etudiants (nom, prenom, numero_etudiant, niveau)  
+SELECT  
     'Nom' || value,
     'Prenom' || value,
     '2024' || printf('%04d', value + 100),
@@ -636,19 +649,19 @@ SELECT
         WHEN 3 THEN 'M1'
         ELSE 'M2'
     END
-FROM generate_series(5, 1000);
+FROM serie;
 
 -- Test de performance avec EXPLAIN
 .timer ON
 
-EXPLAIN QUERY PLAN
-SELECT
+EXPLAIN QUERY PLAN  
+SELECT  
     COUNT(*) as total_inscriptions,
     AVG(CASE WHEN i.note_finale IS NOT NULL THEN i.note_finale END) as moyenne
-FROM inscriptions i
-JOIN etudiants e ON i.etudiant_id = e.id
-JOIN cours c ON i.cours_id = c.id
-WHERE e.niveau IN ('L3', 'M1');
+FROM inscriptions i  
+JOIN etudiants e ON i.etudiant_id = e.id  
+JOIN cours c ON i.cours_id = c.id  
+WHERE e.niveau IN ('L3', 'M1');  
 
 .timer OFF
 ```
@@ -657,8 +670,8 @@ WHERE e.niveau IN ('L3', 'M1');
 
 ```sql
 -- Technique 1 : Matérialisation des jointures fréquentes
-CREATE VIEW vue_etudiants_cours AS
-SELECT
+CREATE VIEW vue_etudiants_cours AS  
+SELECT  
     e.id as etudiant_id,
     e.nom || ' ' || e.prenom as etudiant_nom,
     e.niveau,
@@ -668,10 +681,10 @@ SELECT
     i.statut,
     i.note_finale,
     p.nom || ' ' || p.prenom as professeur_nom
-FROM etudiants e
-JOIN inscriptions i ON e.id = i.etudiant_id
-JOIN cours c ON i.cours_id = c.id
-JOIN professeurs p ON c.professeur_id = p.id;
+FROM etudiants e  
+JOIN inscriptions i ON e.id = i.etudiant_id  
+JOIN cours c ON i.cours_id = c.id  
+JOIN professeurs p ON c.professeur_id = p.id;  
 
 -- Utilisation simplifiée
 SELECT * FROM vue_etudiants_cours WHERE niveau = 'M1';
@@ -688,9 +701,9 @@ CREATE TABLE rapport_inscriptions_cache (
 );
 
 -- Trigger pour maintenir le cache
-CREATE TRIGGER maj_cache_inscriptions
-AFTER INSERT ON inscriptions
-BEGIN
+CREATE TRIGGER maj_cache_inscriptions  
+AFTER INSERT ON inscriptions  
+BEGIN  
     INSERT INTO rapport_inscriptions_cache (etudiant_nom, niveau, cours_nom, departement, note_finale)
     SELECT
         e.nom || ' ' || e.prenom,
@@ -726,31 +739,31 @@ CREATE TABLE audit_inscriptions (
 );
 
 -- Triggers d'audit
-CREATE TRIGGER audit_inscription_insert
-AFTER INSERT ON inscriptions
-BEGIN
+CREATE TRIGGER audit_inscription_insert  
+AFTER INSERT ON inscriptions  
+BEGIN  
     INSERT INTO audit_inscriptions (action, record_id, etudiant_id, cours_id, nouveau_statut)
     VALUES ('INSERT', NEW.id, NEW.etudiant_id, NEW.cours_id, NEW.statut);
 END;
 
-CREATE TRIGGER audit_inscription_update
-AFTER UPDATE ON inscriptions
-WHEN OLD.statut != NEW.statut
-BEGIN
+CREATE TRIGGER audit_inscription_update  
+AFTER UPDATE ON inscriptions  
+WHEN OLD.statut != NEW.statut  
+BEGIN  
     INSERT INTO audit_inscriptions (action, record_id, etudiant_id, cours_id, ancien_statut, nouveau_statut)
     VALUES ('UPDATE', NEW.id, NEW.etudiant_id, NEW.cours_id, OLD.statut, NEW.statut);
 END;
 
-CREATE TRIGGER audit_inscription_delete
-AFTER DELETE ON inscriptions
-BEGIN
+CREATE TRIGGER audit_inscription_delete  
+AFTER DELETE ON inscriptions  
+BEGIN  
     INSERT INTO audit_inscriptions (action, record_id, etudiant_id, cours_id, ancien_statut)
     VALUES ('DELETE', OLD.id, OLD.etudiant_id, OLD.cours_id, OLD.statut);
 END;
 
 -- Test du système d'audit
-INSERT INTO inscriptions (etudiant_id, cours_id, statut) VALUES (1, 3, 'actif');
-UPDATE inscriptions SET statut = 'termine' WHERE etudiant_id = 1 AND cours_id = 3;
+INSERT INTO inscriptions (etudiant_id, cours_id, statut) VALUES (1, 3, 'actif');  
+UPDATE inscriptions SET statut = 'termine' WHERE etudiant_id = 1 AND cours_id = 3;  
 
 -- Consulter l'historique
 SELECT
@@ -760,13 +773,27 @@ SELECT
     c.nom as cours,
     a.ancien_statut,
     a.nouveau_statut
-FROM audit_inscriptions a
-LEFT JOIN etudiants e ON a.etudiant_id = e.id
-LEFT JOIN cours c ON a.cours_id = c.id
-ORDER BY a.timestamp DESC;
+FROM audit_inscriptions a  
+LEFT JOIN etudiants e ON a.etudiant_id = e.id  
+LEFT JOIN cours c ON a.cours_id = c.id  
+ORDER BY a.timestamp DESC;  
 ```
 
 ### 🔄 Pattern State Machine - Gestion d'états
+
+> ⚠️ **Incompatibilité à connaître** : la table `inscriptions` définie plus haut dans ce chapitre limite `statut` à trois valeurs (`'actif'`, `'abandonne'`, `'termine'`) via une contrainte `CHECK`. Pour exécuter le pattern State Machine ci-dessous qui utilise 8 statuts (`candidat`, `accepte`, `inscrit`, …), il faut **soit retirer/élargir cette `CHECK`** sur la table source, **soit appliquer ce pattern sur une autre table dédiée**. Exemple sans `CHECK` restrictive :  
+>  
+> ```sql
+> DROP TABLE IF EXISTS inscriptions;
+> CREATE TABLE inscriptions (
+>     id INTEGER PRIMARY KEY AUTOINCREMENT,
+>     etudiant_id INTEGER NOT NULL,
+>     cours_id INTEGER NOT NULL,
+>     statut TEXT,            -- pas de CHECK : la validation passe par le trigger
+>     note_finale REAL,
+>     UNIQUE (etudiant_id, cours_id)
+> );
+> ```
 
 ```sql
 -- Table des états possibles et transitions autorisées
@@ -824,10 +851,13 @@ CREATE TABLE log_transitions (
 );
 
 -- Trigger pour valider les transitions
-CREATE TRIGGER valider_transition_statut
-BEFORE UPDATE OF statut ON inscriptions
-WHEN OLD.statut != NEW.statut
-BEGIN
+-- ⚠️ SQLite contrainte : le message de RAISE(ABORT, ...) DOIT être un littéral
+--    constant (pas de concaténation `||` ni de référence à OLD/NEW).
+--    Voir l'alternative en commentaire après la définition du trigger.
+CREATE TRIGGER valider_transition_statut  
+BEFORE UPDATE OF statut ON inscriptions  
+WHEN OLD.statut != NEW.statut  
+BEGIN  
     -- Vérifier si la transition est autorisée
     SELECT CASE
         WHEN NOT EXISTS (
@@ -836,13 +866,17 @@ BEGIN
             JOIN statuts_inscription s2 ON ta.statut_cible_id = s2.id
             WHERE s1.nom = OLD.statut AND s2.nom = NEW.statut
         ) THEN
-            RAISE(ABORT, 'Transition non autorisée de ' || OLD.statut || ' vers ' || NEW.statut)
+            RAISE(ABORT, 'Transition de statut non autorisée')
     END;
 
-    -- Logger la transition
+    -- Logger la transition (le détail OLD→NEW est consultable dans log_transitions)
     INSERT INTO log_transitions (inscription_id, statut_avant, statut_apres, succes, message)
     VALUES (NEW.id, OLD.statut, NEW.statut, 1, 'Transition autorisée');
 END;
+
+-- 💡 Alternative pour message d'erreur dynamique : pré-loguer puis lever
+--    (RAISE annule la transaction y compris ces logs s'ils sont dans la même tx,
+--    donc il faut utiliser une table d'audit avec triggers AFTER ou un commit séparé).
 ```
 
 ### 🏗️ Pattern Factory - Relations dynamiques
@@ -913,70 +947,80 @@ SELECT
     LAG(i.note_finale, 1) OVER (PARTITION BY e.id ORDER BY i.date_inscription) as note_precedente,
     LEAD(i.note_finale, 1) OVER (PARTITION BY e.id ORDER BY i.date_inscription) as note_suivante
 
-FROM etudiants e
-JOIN inscriptions i ON e.id = i.etudiant_id
-JOIN cours c ON i.cours_id = c.id
-WHERE i.note_finale IS NOT NULL
-ORDER BY rang_general;
+FROM etudiants e  
+JOIN inscriptions i ON e.id = i.etudiant_id  
+JOIN cours c ON i.cours_id = c.id  
+WHERE i.note_finale IS NOT NULL  
+ORDER BY rang_general;  
 ```
 
 ### 🔗 Jointures récursives avancées
 
 ```sql
 -- Parcours en profondeur de hiérarchies complexes
-CREATE TABLE matieres_hierarchie (
+-- ⚠️ SQLite n'autorise qu'UNE SEULE référence au CTE dans la branche récursive.
+--    Pour gérer des prérequis multiples (« Data Science nécessite Prog ET BDD »),
+--    on utilise une table dédiée pour les prérequis (1 ligne par paire matière-prérequis)
+--    plutôt qu'une colonne TEXT avec liste séparée par virgules.
+
+CREATE TABLE matieres_hier (
     id INTEGER PRIMARY KEY,
     nom TEXT NOT NULL,
     parent_id INTEGER,
     niveau INTEGER,
-    prerequis_ids TEXT,  -- Liste des IDs prérequis
-    FOREIGN KEY (parent_id) REFERENCES matieres_hierarchie(id)
+    FOREIGN KEY (parent_id) REFERENCES matieres_hier(id)
 );
 
-INSERT INTO matieres_hierarchie VALUES
-    (1, 'Informatique', NULL, 1, NULL),
-    (2, 'Programmation', 1, 2, NULL),
-    (3, 'Base de données', 1, 2, '2'),        -- Nécessite Programmation
-    (4, 'Python avancé', 2, 3, '2'),
-    (5, 'SQL avancé', 3, 3, '3'),
-    (6, 'Data Science', 1, 2, '2,3');         -- Nécessite Prog ET BDD
+CREATE TABLE matieres_prerequis (
+    matiere_id INTEGER NOT NULL,
+    prerequis_id INTEGER NOT NULL,
+    PRIMARY KEY (matiere_id, prerequis_id),
+    FOREIGN KEY (matiere_id) REFERENCES matieres_hier(id),
+    FOREIGN KEY (prerequis_id) REFERENCES matieres_hier(id)
+);
 
--- CTE récursive pour calculer tous les prérequis
-WITH RECURSIVE prerequis_complets AS (
-    -- Matières sans prérequis
-    SELECT id, nom, niveau, prerequis_ids, 0 as profondeur_prerequis
-    FROM matieres_hierarchie
-    WHERE prerequis_ids IS NULL
+INSERT INTO matieres_hier VALUES
+    (1, 'Informatique', NULL, 1),
+    (2, 'Programmation', 1, 2),
+    (3, 'Base de données', 1, 2),
+    (4, 'Python avancé', 2, 3),
+    (5, 'SQL avancé', 3, 3),
+    (6, 'Data Science', 1, 2);
 
+INSERT INTO matieres_prerequis VALUES
+    (3, 2),  -- BDD nécessite Programmation
+    (4, 2),  -- Python avancé nécessite Programmation
+    (5, 3),  -- SQL avancé nécessite BDD
+    (6, 2),  -- Data Science nécessite Programmation
+    (6, 3);  -- Data Science nécessite BDD
+
+-- CTE récursive : parcours descendant de la hiérarchie parent → enfant
+-- (UNE seule référence récursive au CTE, conforme à SQLite)
+WITH RECURSIVE descente(id, nom, niveau_hier, profondeur, chemin) AS (
+    SELECT id, nom, niveau, 0, nom
+    FROM matieres_hier
+    WHERE parent_id IS NULL
     UNION ALL
-
-    -- Matières avec prérequis
-    SELECT m.id, m.nom, m.niveau, m.prerequis_ids, p.profondeur_prerequis + 1
-    FROM matieres_hierarchie m
-    JOIN prerequis_complets p ON (
-        -- Vérifie que tous les prérequis sont dans prerequis_complets
-        CASE WHEN m.prerequis_ids IS NULL THEN 1
-             ELSE (LENGTH(m.prerequis_ids) - LENGTH(REPLACE(m.prerequis_ids, ',', '')) + 1) <=
-                  (SELECT COUNT(*) FROM prerequis_complets WHERE INSTR(',' || m.prerequis_ids || ',', ',' || id || ',') > 0)
-        END
-    )
-    WHERE m.id NOT IN (SELECT id FROM prerequis_complets)
+    SELECT m.id, m.nom, m.niveau, d.profondeur + 1, d.chemin || ' > ' || m.nom
+    FROM matieres_hier m
+    JOIN descente d ON m.parent_id = d.id
 )
-SELECT
-    nom,
-    niveau,
-    profondeur_prerequis,
-    prerequis_ids
-FROM prerequis_complets
-ORDER BY profondeur_prerequis, niveau;
+SELECT chemin, profondeur FROM descente ORDER BY chemin;
+
+-- Pour interroger les prérequis d'une matière : simple JOIN, pas besoin de récursion
+SELECT m.nom AS matiere, p.nom AS prerequis_direct  
+FROM matieres_prerequis mp  
+JOIN matieres_hier m ON m.id = mp.matiere_id  
+JOIN matieres_hier p ON p.id = mp.prerequis_id  
+ORDER BY m.nom, p.nom;  
 ```
 
 ### 🎯 Jointures avec agrégations complexes
 
 ```sql
 -- Analyses multidimensionnelles avec jointures
-CREATE VIEW analyse_performance_complete AS
-SELECT
+CREATE VIEW analyse_performance_complete AS  
+SELECT  
     -- Dimension Étudiant
     e.id as etudiant_id,
     e.nom || ' ' || e.prenom as etudiant,
@@ -1015,12 +1059,12 @@ SELECT
     -- Répartition par département
     COUNT(DISTINCT d.id) as nb_departements_suivis
 
-FROM etudiants e
-LEFT JOIN inscriptions i ON e.id = i.etudiant_id
-LEFT JOIN cours c ON i.cours_id = c.id
-LEFT JOIN professeurs p ON c.professeur_id = p.id
-LEFT JOIN departements d ON p.departement_id = d.id
-GROUP BY e.id, e.nom, e.prenom, e.niveau;
+FROM etudiants e  
+LEFT JOIN inscriptions i ON e.id = i.etudiant_id  
+LEFT JOIN cours c ON i.cours_id = c.id  
+LEFT JOIN professeurs p ON c.professeur_id = p.id  
+LEFT JOIN departements d ON p.departement_id = d.id  
+GROUP BY e.id, e.nom, e.prenom, e.niveau;  
 
 -- Utilisation de la vue pour analyses avancées
 SELECT
@@ -1030,36 +1074,59 @@ SELECT
     AVG(progression) as progression_moyenne,
     COUNT(CASE WHEN moyenne_generale >= 14 THEN 1 END) as excellents,
     COUNT(CASE WHEN moyenne_generale < 10 THEN 1 END) as en_difficulte
-FROM analyse_performance_complete
-WHERE moyenne_generale IS NOT NULL
-GROUP BY niveau
-ORDER BY moyenne_niveau DESC;
+FROM analyse_performance_complete  
+WHERE moyenne_generale IS NOT NULL  
+GROUP BY niveau  
+ORDER BY moyenne_niveau DESC;  
 ```
 
 ## Gestion des relations à grande échelle
 
 ### ⚡ Stratégies de partitioning logique
 
+> ⚠️ **SQLite n'a PAS de partitioning natif** (contrairement à PostgreSQL avec `PARTITION BY` ou `INHERITS`). On simule le partitioning manuellement avec des tables séparées + une vue d'unification.
+
 ```sql
--- Partitioning par période pour les grandes tables relationnelles
+-- ✅ Approche SQLite : tables distinctes avec CHECK pour valider la plage
 CREATE TABLE inscriptions_2024_s1 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    etudiant_id INTEGER NOT NULL,
+    cours_id INTEGER NOT NULL,
+    date_inscription TEXT NOT NULL,
+    statut TEXT,
+    note_finale REAL,
     CHECK (date_inscription >= '2024-01-01' AND date_inscription < '2024-06-01')
-) INHERITS (inscriptions);
+);
 
 CREATE TABLE inscriptions_2024_s2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    etudiant_id INTEGER NOT NULL,
+    cours_id INTEGER NOT NULL,
+    date_inscription TEXT NOT NULL,
+    statut TEXT,
+    note_finale REAL,
     CHECK (date_inscription >= '2024-06-01' AND date_inscription < '2025-01-01')
-) INHERITS (inscriptions);
+);
 
--- Vue unifiée
-CREATE VIEW inscriptions_toutes AS
-SELECT * FROM inscriptions_2024_s1
-UNION ALL
-SELECT * FROM inscriptions_2024_s2;
+-- Vue unifiée (lecture seule en pratique pour une vue UNION ALL)
+CREATE VIEW inscriptions_toutes AS  
+SELECT 's1' AS partition, id, etudiant_id, cours_id, date_inscription, statut, note_finale  
+FROM inscriptions_2024_s1  
+UNION ALL  
+SELECT 's2' AS partition, id, etudiant_id, cours_id, date_inscription, statut, note_finale  
+FROM inscriptions_2024_s2;  
 
 -- Index spécialisés par partition
-CREATE INDEX idx_insc_2024_s1_etudiant ON inscriptions_2024_s1(etudiant_id);
-CREATE INDEX idx_insc_2024_s2_etudiant ON inscriptions_2024_s2(etudiant_id);
+CREATE INDEX idx_insc_2024_s1_etudiant ON inscriptions_2024_s1(etudiant_id);  
+CREATE INDEX idx_insc_2024_s2_etudiant ON inscriptions_2024_s2(etudiant_id);  
+
+-- Insertion : il faut choisir la bonne table soi-même
+-- (ou utiliser un trigger INSTEAD OF INSERT sur la vue — voir 3.4 et 3.5)
+INSERT INTO inscriptions_2024_s1 (etudiant_id, cours_id, date_inscription, statut)  
+VALUES (1, 1, '2024-02-01', 'actif');  
 ```
+
+> 💡 **Alternative** : `ATTACH DATABASE` pour mettre chaque partition dans un fichier `.db` séparé — utile pour l'archivage long terme (un fichier par année par exemple).
 
 ### 📊 Matérialisation de jointures fréquentes
 
@@ -1083,9 +1150,9 @@ CREATE TABLE materialized_etudiant_cours (
 );
 
 -- Procédure de rafraîchissement
-CREATE TRIGGER refresh_materialized_view
-AFTER INSERT ON inscriptions
-BEGIN
+CREATE TRIGGER refresh_materialized_view  
+AFTER INSERT ON inscriptions  
+BEGIN  
     INSERT OR REPLACE INTO materialized_etudiant_cours
     (etudiant_id, etudiant_nom, niveau, cours_id, cours_nom, professeur_nom, departement_nom, note_finale, statut)
     SELECT
@@ -1100,10 +1167,10 @@ BEGIN
 END;
 
 -- Requêtes ultra-rapides sur la table matérialisée
-SELECT departement_nom, COUNT(*), AVG(note_finale)
-FROM materialized_etudiant_cours
-WHERE statut = 'termine'
-GROUP BY departement_nom;
+SELECT departement_nom, COUNT(*), AVG(note_finale)  
+FROM materialized_etudiant_cours  
+WHERE statut = 'termine'  
+GROUP BY departement_nom;  
 ```
 
 ## Debugging et analyse des relations
@@ -1112,44 +1179,44 @@ GROUP BY departement_nom;
 
 ```sql
 -- Fonction pour analyser l'intégrité référentielle
-CREATE VIEW diagnostic_relations AS
-SELECT
+CREATE VIEW diagnostic_relations AS  
+SELECT  
     'Étudiants sans inscription' as probleme,
     COUNT(*) as occurrences
-FROM etudiants e
-LEFT JOIN inscriptions i ON e.id = i.etudiant_id
-WHERE i.etudiant_id IS NULL
+FROM etudiants e  
+LEFT JOIN inscriptions i ON e.id = i.etudiant_id  
+WHERE i.etudiant_id IS NULL  
 
 UNION ALL
 
 SELECT
     'Cours sans étudiant inscrit',
     COUNT(*)
-FROM cours c
-LEFT JOIN inscriptions i ON c.id = i.cours_id
-WHERE i.cours_id IS NULL
+FROM cours c  
+LEFT JOIN inscriptions i ON c.id = i.cours_id  
+WHERE i.cours_id IS NULL  
 
 UNION ALL
 
 SELECT
     'Professeurs sans cours',
     COUNT(*)
-FROM professeurs p
-LEFT JOIN cours c ON p.id = c.professeur_id
-WHERE c.professeur_id IS NULL
+FROM professeurs p  
+LEFT JOIN cours c ON p.id = c.professeur_id  
+WHERE c.professeur_id IS NULL  
 
 UNION ALL
 
 SELECT
     'Départements sans professeur',
     COUNT(*)
-FROM departements d
-LEFT JOIN professeurs p ON d.id = p.departement_id
-WHERE p.departement_id IS NULL;
+FROM departements d  
+LEFT JOIN professeurs p ON d.id = p.departement_id  
+WHERE p.departement_id IS NULL;  
 
 -- Analyse des cardinalités
-CREATE VIEW analyse_cardinalites AS
-SELECT
+CREATE VIEW analyse_cardinalites AS  
+SELECT  
     'Étudiants' as entite,
     COUNT(*) as total,
     AVG(nb_cours) as moyenne_relations,
@@ -1201,13 +1268,13 @@ CREATE TABLE metriques_performance (
 );
 
 -- Procédure de benchmark automatique
-CREATE VIEW benchmark_jointures AS
-SELECT
+CREATE VIEW benchmark_jointures AS  
+SELECT  
     'Jointure simple (étudiant-inscription)' as type_requete,
     COUNT(*) as nb_resultats,
     'Performance baseline' as commentaire
-FROM etudiants e
-JOIN inscriptions i ON e.id = i.etudiant_id
+FROM etudiants e  
+JOIN inscriptions i ON e.id = i.etudiant_id  
 
 UNION ALL
 
@@ -1215,11 +1282,11 @@ SELECT
     'Jointure complexe (5 tables)',
     COUNT(*),
     'Jointure complète avec tous les détails'
-FROM etudiants e
-JOIN inscriptions i ON e.id = i.etudiant_id
-JOIN cours c ON i.cours_id = c.id
-JOIN professeurs p ON c.professeur_id = p.id
-JOIN departements d ON p.departement_id = d.id;
+FROM etudiants e  
+JOIN inscriptions i ON e.id = i.etudiant_id  
+JOIN cours c ON i.cours_id = c.id  
+JOIN professeurs p ON c.professeur_id = p.id  
+JOIN departements d ON p.departement_id = d.id;  
 ```
 
 ## Cas d'usage réels et best practices
@@ -1228,22 +1295,28 @@ JOIN departements d ON p.departement_id = d.id;
 
 ```sql
 -- Recommandation de cours basée sur les relations
-CREATE VIEW recommandations_cours AS
-WITH cours_similaires AS (
-    -- Cours suivis par des étudiants ayant des profils similaires
-    SELECT DISTINCT
+-- Algorithme : pour chaque étudiant i1, on cherche les autres étudiants i2
+-- qui ont suivi au moins un cours en commun, puis on récupère les AUTRES cours
+-- (i3) suivis par ces étudiants i2 que i1 n'a pas encore suivis.
+CREATE VIEW recommandations_cours AS  
+WITH cours_similaires AS (  
+    SELECT
         i1.etudiant_id,
-        i2.cours_id as cours_recommande,
-        COUNT(*) as score_similarite
+        i3.cours_id AS cours_recommande,
+        COUNT(*) AS score_similarite
     FROM inscriptions i1
-    JOIN inscriptions i2 ON i1.cours_id = i2.cours_id AND i1.etudiant_id != i2.etudiant_id
-    JOIN inscriptions i3 ON i2.etudiant_id = i3.etudiant_id
+    JOIN inscriptions i2
+        ON i1.cours_id = i2.cours_id
+        AND i1.etudiant_id != i2.etudiant_id
+    JOIN inscriptions i3
+        ON i2.etudiant_id = i3.etudiant_id
     WHERE i1.statut IN ('termine', 'actif')
     AND i2.statut IN ('termine', 'actif')
+    AND i3.statut IN ('termine', 'actif')
     AND i3.cours_id NOT IN (
         SELECT cours_id FROM inscriptions WHERE etudiant_id = i1.etudiant_id
     )
-    GROUP BY i1.etudiant_id, i2.cours_id
+    GROUP BY i1.etudiant_id, i3.cours_id
     HAVING score_similarite >= 2
 )
 SELECT
@@ -1252,11 +1325,11 @@ SELECT
     c.code,
     cs.score_similarite,
     p.nom || ' ' || p.prenom as professeur
-FROM cours_similaires cs
-JOIN etudiants e ON cs.etudiant_id = e.id
-JOIN cours c ON cs.cours_recommande = c.id
-JOIN professeurs p ON c.professeur_id = p.id
-ORDER BY cs.score_similarite DESC;
+FROM cours_similaires cs  
+JOIN etudiants e ON cs.etudiant_id = e.id  
+JOIN cours c ON cs.cours_recommande = c.id  
+JOIN professeurs p ON c.professeur_id = p.id  
+ORDER BY cs.score_similarite DESC;  
 ```
 
 ### 🏆 Système de badges et récompenses
@@ -1288,10 +1361,10 @@ INSERT INTO badges VALUES
     (4, 'Assidu', '5 cours terminés', 'nb_cours_termines >= 5', 25);
 
 -- Trigger pour attribution automatique des badges
-CREATE TRIGGER attribuer_badges
-AFTER UPDATE ON inscriptions
-WHEN NEW.statut = 'termine' AND NEW.note_finale IS NOT NULL
-BEGIN
+CREATE TRIGGER attribuer_badges  
+AFTER UPDATE ON inscriptions  
+WHEN NEW.statut = 'termine' AND NEW.note_finale IS NOT NULL  
+BEGIN  
     -- Badge "Premier cours"
     INSERT OR IGNORE INTO etudiants_badges (etudiant_id, badge_id)
     SELECT NEW.etudiant_id, 1
@@ -1312,17 +1385,17 @@ BEGIN
 END;
 
 -- Vue des accomplissements
-CREATE VIEW tableau_recompenses AS
-SELECT
+CREATE VIEW tableau_recompenses AS  
+SELECT  
     e.nom || ' ' || e.prenom as etudiant,
     COUNT(eb.badge_id) as nb_badges,
     SUM(b.points) as total_points,
     GROUP_CONCAT(b.nom, ', ') as badges_obtenus
-FROM etudiants e
-LEFT JOIN etudiants_badges eb ON e.id = eb.etudiant_id
-LEFT JOIN badges b ON eb.badge_id = b.id
-GROUP BY e.id
-ORDER BY total_points DESC;
+FROM etudiants e  
+LEFT JOIN etudiants_badges eb ON e.id = eb.etudiant_id  
+LEFT JOIN badges b ON eb.badge_id = b.id  
+GROUP BY e.id  
+ORDER BY total_points DESC;  
 ```
 
 ## Récapitulatif et bonnes pratiques
@@ -1381,4 +1454,4 @@ ORDER BY total_points DESC;
 
 **🎯 Vous maîtrisez maintenant** l'art de connecter vos données avec des relations robustes, performantes et évolutives !
 
-⏭️
+⏭️ [3.3 Gestion des clés étrangères et contraintes référentielles](/03-conception-modelisation-avancee/03-gestion-cles-etrangeres-contraintes-referentielles.md)

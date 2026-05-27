@@ -13,6 +13,8 @@ La normalisation est comme **ranger efficacement une bibliothèque** : au lieu d
 - **2NF (Deuxième Forme Normale)** → Éliminer les dépendances partielles
 - **3NF (Troisième Forme Normale)** → Éliminer les dépendances transitives
 
+> 💡 **Comment tester les exemples** : ce chapitre illustre **plusieurs schémas distincts** (1NF, 2NF, 3NF, schéma final, bibliothèque…) avec parfois des noms de tables qui se recoupent (`etudiants`, `telephones_etudiants`, etc.). Chaque grand exemple est conçu pour être exécuté **dans une base vierge**. Lancez `sqlite3 nouvelle_base.db` (ou recréez une base en mémoire avec `sqlite3 :memory:`) entre deux sections principales pour éviter les erreurs « table already exists ».
+
 ## Pourquoi normaliser ? Les problèmes de la dénormalisation
 
 ### 🚨 Exemple concret : Base d'école mal conçue
@@ -132,7 +134,10 @@ CREATE TABLE etudiants_1nf (
 );
 
 -- Étape 2 : Tables séparées pour les valeurs multiples
-CREATE TABLE telephones_etudiants (
+-- Les noms portent le suffixe `_1nf` pour ne pas entrer en conflit avec
+-- les tables `telephones_etudiants` et `langues_etudiants` du schéma final 3NF
+-- plus bas dans le chapitre.
+CREATE TABLE telephones_etudiants_1nf (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     etudiant_id INTEGER,
     telephone TEXT,
@@ -140,7 +145,7 @@ CREATE TABLE telephones_etudiants (
     FOREIGN KEY (etudiant_id) REFERENCES etudiants_1nf(id)
 );
 
-CREATE TABLE langues_etudiants (
+CREATE TABLE langues_etudiants_1nf (
     etudiant_id INTEGER,
     langue TEXT,
     niveau TEXT, -- 'débutant', 'intermédiaire', 'courant', 'natif'
@@ -153,12 +158,12 @@ INSERT INTO etudiants_1nf (nom, email) VALUES
     ('Alice Martin', 'alice@email.com'),
     ('Bob Leroy', 'bob@email.com');
 
-INSERT INTO telephones_etudiants (etudiant_id, telephone, type_telephone) VALUES
+INSERT INTO telephones_etudiants_1nf (etudiant_id, telephone, type_telephone) VALUES
     (1, '0123456789', 'mobile'),
     (1, '0987654321', 'fixe'),
     (2, '0555666777', 'mobile');
 
-INSERT INTO langues_etudiants VALUES
+INSERT INTO langues_etudiants_1nf VALUES
     (1, 'Français', 'natif'),
     (1, 'Anglais', 'courant'),
     (1, 'Espagnol', 'intermédiaire'),
@@ -166,29 +171,29 @@ INSERT INTO langues_etudiants VALUES
     (2, 'Anglais', 'courant');
 
 -- Maintenant les requêtes sont possibles !
-SELECT e.nom, t.telephone, t.type_telephone
-FROM etudiants_1nf e
-JOIN telephones_etudiants t ON e.id = t.etudiant_id
-WHERE e.nom = 'Alice Martin';
+SELECT e.nom, t.telephone, t.type_telephone  
+FROM etudiants_1nf e  
+JOIN telephones_etudiants_1nf t ON e.id = t.etudiant_id  
+WHERE e.nom = 'Alice Martin';  
 ```
 
 ### 🔍 Vérification 1NF
 
 ```sql
 -- Test : Tous les étudiants parlant anglais
-SELECT DISTINCT e.nom
-FROM etudiants_1nf e
-JOIN langues_etudiants l ON e.id = l.etudiant_id
-WHERE l.langue = 'Anglais';
+SELECT DISTINCT e.nom  
+FROM etudiants_1nf e  
+JOIN langues_etudiants_1nf l ON e.id = l.etudiant_id  
+WHERE l.langue = 'Anglais';  
 
 -- Test : Statistiques des langues
 SELECT
     langue,
     COUNT(*) as nb_etudiants,
     COUNT(CASE WHEN niveau = 'courant' THEN 1 END) as niveau_courant
-FROM langues_etudiants
-GROUP BY langue
-ORDER BY nb_etudiants DESC;
+FROM langues_etudiants_1nf  
+GROUP BY langue  
+ORDER BY nb_etudiants DESC;  
 ```
 
 ## Deuxième Forme Normale (2NF) - Élimination des dépendances partielles
@@ -239,7 +244,7 @@ SELECT * FROM inscriptions_notes_mauvais_2nf;
 **Problèmes identifiés :**
 - **Redondance** : Infos d'Alice répétées pour chaque cours
 - **Anomalies de mise à jour** : Changer l'email d'Alice = modifier plusieurs lignes
-- **Incohérences** : Risk d'avoir des informations différentes pour le même étudiant
+- **Incohérences** : Risque d'avoir des informations différentes pour le même étudiant
 
 ### ✅ Solution 2NF : Séparation par dépendances
 
@@ -304,10 +309,10 @@ SELECT
     c.credits,
     i.note,
     i.date_examen
-FROM inscriptions_2nf i
-JOIN etudiants_2nf e ON i.etudiant_id = e.id
-JOIN cours_2nf c ON i.cours_id = c.id
-ORDER BY e.nom, c.nom;
+FROM inscriptions_2nf i  
+JOIN etudiants_2nf e ON i.etudiant_id = e.id  
+JOIN cours_2nf c ON i.cours_id = c.id  
+ORDER BY e.nom, c.nom;  
 ```
 
 ## Troisième Forme Normale (3NF) - Élimination des dépendances transitives
@@ -404,18 +409,18 @@ SELECT
     p.nom as professeur,
     p.departement,
     p.bureau
-FROM cours_3nf c
-JOIN professeurs_3nf p ON c.professeur_id = p.id
-ORDER BY p.departement, c.nom;
+FROM cours_3nf c  
+JOIN professeurs_3nf p ON c.professeur_id = p.id  
+ORDER BY p.departement, c.nom;  
 
 -- Statistiques par département
 SELECT
     p.departement,
     COUNT(c.id) as nb_cours,
     AVG(c.credits) as credits_moyen
-FROM professeurs_3nf p
-LEFT JOIN cours_3nf c ON p.id = c.professeur_id
-GROUP BY p.departement;
+FROM professeurs_3nf p  
+LEFT JOIN cours_3nf c ON p.id = c.professeur_id  
+GROUP BY p.departement;  
 ```
 
 ## Exemple complet : De 0NF à 3NF
@@ -615,10 +620,10 @@ SELECT
     COUNT(*) as lignes_total,
     COUNT(DISTINCT p.nom) as professeurs_uniques,
     COUNT(DISTINCT e.nom) as etudiants_uniques
-FROM inscriptions i
-JOIN cours c ON i.cours_id = c.id
-JOIN professeurs p ON c.professeur_id = p.id
-JOIN etudiants e ON i.etudiant_id = e.id;
+FROM inscriptions i  
+JOIN cours c ON i.cours_id = c.id  
+JOIN professeurs p ON c.professeur_id = p.id  
+JOIN etudiants e ON i.etudiant_id = e.id;  
 
 -- 3. Requêtes riches possibles
 SELECT
@@ -627,13 +632,13 @@ SELECT
     COUNT(DISTINCT c.id) as nb_cours,
     COUNT(DISTINCT i.etudiant_id) as nb_etudiants,
     AVG(i.note) as moyenne_notes
-FROM departements d
-JOIN professeurs p ON d.id = p.departement_id
-JOIN cours c ON p.id = c.professeur_id
-JOIN inscriptions i ON c.id = i.cours_id
-WHERE i.note IS NOT NULL
-GROUP BY d.id, p.id
-ORDER BY moyenne_notes DESC;
+FROM departements d  
+JOIN professeurs p ON d.id = p.departement_id  
+JOIN cours c ON p.id = c.professeur_id  
+JOIN inscriptions i ON c.id = i.cours_id  
+WHERE i.note IS NOT NULL  
+GROUP BY d.id, p.id  
+ORDER BY moyenne_notes DESC;  
 
 -- 4. Intégrité référentielle
 -- Impossible de supprimer un professeur qui a des cours
@@ -669,11 +674,11 @@ SELECT 'Après normalisation' as etat,
 -- Statistiques réelles du schéma normalisé
 SELECT
     'Professeurs' as table_name, COUNT(*) as nb_lignes FROM professeurs
-UNION ALL SELECT 'Étudiants', COUNT(*) FROM etudiants
-UNION ALL SELECT 'Cours', COUNT(*) FROM cours
-UNION ALL SELECT 'Inscriptions', COUNT(*) FROM inscriptions
-UNION ALL SELECT 'Départements', COUNT(*) FROM departements
-UNION ALL SELECT 'Téléphones', COUNT(*) FROM telephones_etudiants;
+UNION ALL SELECT 'Étudiants', COUNT(*) FROM etudiants  
+UNION ALL SELECT 'Cours', COUNT(*) FROM cours  
+UNION ALL SELECT 'Inscriptions', COUNT(*) FROM inscriptions  
+UNION ALL SELECT 'Départements', COUNT(*) FROM departements  
+UNION ALL SELECT 'Téléphones', COUNT(*) FROM telephones_etudiants;  
 ```
 
 ## Cas particuliers et exceptions
@@ -703,12 +708,26 @@ CREATE TABLE rapport_notes_denormalise (
 );
 
 -- Trigger pour maintenir la cohérence
-CREATE TRIGGER maj_rapport_notes
-AFTER INSERT ON inscriptions
-BEGIN
-    -- Recalculer et insérer/mettre à jour le rapport
-    INSERT OR REPLACE INTO rapport_notes_denormalise (...)
-    SELECT ...; -- Requête complexe avec toutes les jointures
+-- (suppose que `etudiants`, `cours`, `professeurs`, `departements`, `inscriptions`
+--  existent — cf. section « Schéma final normalisé 3NF » plus haut)
+CREATE TRIGGER maj_rapport_notes  
+AFTER INSERT ON inscriptions  
+BEGIN  
+    INSERT OR REPLACE INTO rapport_notes_denormalise
+        (id, etudiant_nom, cours_nom, professeur_nom, departement_nom, note, date_examen)
+    SELECT
+        NEW.rowid,
+        e.nom,
+        c.nom,
+        p.nom,
+        d.nom,
+        NEW.note,
+        NEW.date_examen
+    FROM etudiants e, cours c, professeurs p, departements d
+    WHERE e.id = NEW.etudiant_id
+      AND c.id = NEW.cours_id
+      AND p.id = c.professeur_id
+      AND d.id = p.departement_id;
 END;
 ```
 
@@ -727,12 +746,12 @@ END;
 -- 4. Monitorer la cohérence
 
 -- Exemple de vérification de cohérence
-CREATE VIEW verification_coherence AS
-SELECT
+CREATE VIEW verification_coherence AS  
+SELECT  
     'Incohérences détectées' as alerte,
     COUNT(*) as nb_problemes
-FROM rapport_notes_denormalise r
-JOIN inscriptions i ON r.etudiant_nom || r.cours_nom =
+FROM rapport_notes_denormalise r  
+JOIN inscriptions i ON r.etudiant_nom || r.cours_nom =  
     (SELECT e.nom || c.nom FROM etudiants e, cours c
      WHERE e.id = i.etudiant_id AND c.id = i.cours_id)
 WHERE r.note != i.note;
@@ -772,18 +791,20 @@ WHERE r.note != i.note;
 
 ### 📋 Bonnes pratiques SQLite spécifiques
 
+> 💡 Les exemples ci-dessous sont **illustratifs** et utilisent le suffixe `_bp` pour ne pas entrer en conflit avec les tables `etudiants`, `cours`, `inscriptions` du schéma final 3NF déjà créées plus haut.
+
 ```sql
 -- ✅ Nomenclature cohérente
-CREATE TABLE etudiants (              -- Pluriel pour les tables
-    id INTEGER PRIMARY KEY,           -- id simple pour PK
+CREATE TABLE etudiants_bp (              -- Pluriel pour les tables
+    id INTEGER PRIMARY KEY,              -- id simple pour PK
     nom TEXT NOT NULL,
     email TEXT UNIQUE,
-    departement_id INTEGER,           -- _id pour les FK
+    departement_id INTEGER,              -- _id pour les FK
     FOREIGN KEY (departement_id) REFERENCES departements(id)
 );
 
 -- ✅ Contraintes appropriées
-CREATE TABLE cours (
+CREATE TABLE cours_bp (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     nom TEXT NOT NULL CHECK (LENGTH(nom) > 0),
     code TEXT UNIQUE CHECK (LENGTH(code) BETWEEN 3 AND 10),
@@ -792,10 +813,11 @@ CREATE TABLE cours (
     FOREIGN KEY (professeur_id) REFERENCES professeurs(id)
 );
 
--- ✅ Index sur les clés étrangères
-CREATE INDEX idx_cours_professeur ON cours(professeur_id);
-CREATE INDEX idx_inscriptions_etudiant ON inscriptions(etudiant_id);
-CREATE INDEX idx_inscriptions_cours ON inscriptions(cours_id);
+-- ✅ Index sur les clés étrangères (sur les tables _bp)
+CREATE INDEX idx_cours_bp_professeur ON cours_bp(professeur_id);
+-- Pour les vrais index sur le schéma 3NF :
+-- CREATE INDEX idx_inscriptions_etudiant ON inscriptions(etudiant_id);
+-- CREATE INDEX idx_inscriptions_cours ON inscriptions(cours_id);
 ```
 
 ### 🔧 Outils d'analyse et validation
@@ -807,35 +829,35 @@ CREATE INDEX idx_inscriptions_cours ON inscriptions(cours_id);
 SELECT 'Vérification 1NF' as test;
 
 -- Chercher des valeurs avec séparateurs suspects
-SELECT 'Valeurs avec séparateurs' as probleme, COUNT(*) as occurrences
-FROM etudiants
-WHERE nom LIKE '%,%' OR nom LIKE '%;%' OR nom LIKE '%|%';
+SELECT 'Valeurs avec séparateurs' as probleme, COUNT(*) as occurrences  
+FROM etudiants  
+WHERE nom LIKE '%,%' OR nom LIKE '%;%' OR nom LIKE '%|%';  
 
 -- Chercher des emails multiples
-SELECT 'Emails multiples possibles' as probleme, COUNT(*) as occurrences
-FROM etudiants
-WHERE email LIKE '%,%' OR email LIKE '%;%';
+SELECT 'Emails multiples possibles' as probleme, COUNT(*) as occurrences  
+FROM etudiants  
+WHERE email LIKE '%,%' OR email LIKE '%;%';  
 
 -- 2. Vérifier l'intégrité référentielle (2NF/3NF)
 SELECT 'Vérification intégrité référentielle' as test;
 
 -- Cours sans professeur valide
-SELECT 'Cours sans professeur' as probleme, COUNT(*) as occurrences
-FROM cours c
-LEFT JOIN professeurs p ON c.professeur_id = p.id
-WHERE p.id IS NULL;
+SELECT 'Cours sans professeur' as probleme, COUNT(*) as occurrences  
+FROM cours c  
+LEFT JOIN professeurs p ON c.professeur_id = p.id  
+WHERE p.id IS NULL;  
 
 -- Inscriptions avec étudiants inexistants
-SELECT 'Inscriptions orphelines (étudiants)' as probleme, COUNT(*) as occurrences
-FROM inscriptions i
-LEFT JOIN etudiants e ON i.etudiant_id = e.id
-WHERE e.id IS NULL;
+SELECT 'Inscriptions orphelines (étudiants)' as probleme, COUNT(*) as occurrences  
+FROM inscriptions i  
+LEFT JOIN etudiants e ON i.etudiant_id = e.id  
+WHERE e.id IS NULL;  
 
 -- Inscriptions avec cours inexistants
-SELECT 'Inscriptions orphelines (cours)' as probleme, COUNT(*) as occurrences
-FROM inscriptions i
-LEFT JOIN cours c ON i.cours_id = c.id
-WHERE c.id IS NULL;
+SELECT 'Inscriptions orphelines (cours)' as probleme, COUNT(*) as occurrences  
+FROM inscriptions i  
+LEFT JOIN cours c ON i.cours_id = c.id  
+WHERE c.id IS NULL;  
 
 -- 3. Analyser la redondance restante
 SELECT 'Analyse de redondance' as test;
@@ -861,9 +883,9 @@ SELECT
 SELECT
     'Contraintes FK' as metrique,
     COUNT(*) as valeur
-FROM pragma_foreign_key_list('cours')
-UNION ALL SELECT 'Contraintes FK', COUNT(*) FROM pragma_foreign_key_list('inscriptions')
-UNION ALL SELECT 'Contraintes FK', COUNT(*) FROM pragma_foreign_key_list('telephones_etudiants');
+FROM pragma_foreign_key_list('cours')  
+UNION ALL SELECT 'Contraintes FK', COUNT(*) FROM pragma_foreign_key_list('inscriptions')  
+UNION ALL SELECT 'Contraintes FK', COUNT(*) FROM pragma_foreign_key_list('telephones_etudiants');  
 ```
 
 ### 🎯 Patterns de normalisation avancés
@@ -1241,13 +1263,13 @@ SELECT
     GROUP_CONCAT(DISTINCT a.nom || ' ' || a.prenom) as auteurs,
     GROUP_CONCAT(DISTINCT g.nom) as genres,
     e.nom as editeur
-FROM livres l
-LEFT JOIN livres_auteurs la ON l.id = la.livre_id
-LEFT JOIN auteurs a ON la.auteur_id = a.id
-LEFT JOIN livres_genres lg ON l.id = lg.livre_id
-LEFT JOIN genres g ON lg.genre_id = g.id
-LEFT JOIN editeurs e ON l.editeur_id = e.id
-GROUP BY l.id, l.titre, e.nom;
+FROM livres l  
+LEFT JOIN livres_auteurs la ON l.id = la.livre_id  
+LEFT JOIN auteurs a ON la.auteur_id = a.id  
+LEFT JOIN livres_genres lg ON l.id = lg.livre_id  
+LEFT JOIN genres g ON lg.genre_id = g.id  
+LEFT JOIN editeurs e ON l.editeur_id = e.id  
+GROUP BY l.id, l.titre, e.nom;  
 
 -- Emprunts en cours avec toutes les informations
 SELECT
@@ -1260,11 +1282,11 @@ SELECT
         WHEN date('now') > empr.date_retour_prevue THEN 'En retard'
         ELSE 'Dans les temps'
     END as statut
-FROM emprunts empr
-JOIN exemplaires ex ON empr.exemplaire_id = ex.id
-JOIN livres l ON ex.livre_id = l.id
-JOIN emprunteurs emp ON empr.emprunteur_id = emp.id
-WHERE empr.date_retour_reel IS NULL;
+FROM emprunts empr  
+JOIN exemplaires ex ON empr.exemplaire_id = ex.id  
+JOIN livres l ON ex.livre_id = l.id  
+JOIN emprunteurs emp ON empr.emprunteur_id = emp.id  
+WHERE empr.date_retour_reel IS NULL;  
 
 -- Statistiques par genre
 SELECT
@@ -1272,13 +1294,13 @@ SELECT
     COUNT(DISTINCT l.id) as nb_livres,
     COUNT(DISTINCT ex.id) as nb_exemplaires,
     COUNT(DISTINCT empr.id) as nb_emprunts_total
-FROM genres g
-LEFT JOIN livres_genres lg ON g.id = lg.genre_id
-LEFT JOIN livres l ON lg.livre_id = l.id
-LEFT JOIN exemplaires ex ON l.id = ex.livre_id
-LEFT JOIN emprunts empr ON ex.id = empr.exemplaire_id
-GROUP BY g.id, g.nom
-ORDER BY nb_livres DESC;
+FROM genres g  
+LEFT JOIN livres_genres lg ON g.id = lg.genre_id  
+LEFT JOIN livres l ON lg.livre_id = l.id  
+LEFT JOIN exemplaires ex ON l.id = ex.livre_id  
+LEFT JOIN emprunts empr ON ex.id = empr.exemplaire_id  
+GROUP BY g.id, g.nom  
+ORDER BY nb_livres DESC;  
 ```
 
 ### 🎯 Avantages obtenus par la normalisation
@@ -1293,14 +1315,14 @@ UPDATE emprunteurs SET email = 'jean.nouveau@email.com' WHERE id = 1;
 
 -- 2. Pas de redondance
 -- Ajouter un nouvel exemplaire du Seigneur des Anneaux
-INSERT INTO exemplaires (numero, livre_id, etat, localisation)
-VALUES ('EX004', 1, 'neuf', 'A1-2-4');
+INSERT INTO exemplaires (numero, livre_id, etat, localisation)  
+VALUES ('EX004', 1, 'neuf', 'A1-2-4');  
 -- ✅ Pas besoin de dupliquer les infos du livre
 
 -- 3. Flexibilité
 -- Ajouter un co-auteur à un livre
-INSERT INTO livres_auteurs (livre_id, auteur_id, role)
-VALUES (1, 3, 'traducteur');
+INSERT INTO livres_auteurs (livre_id, auteur_id, role)  
+VALUES (1, 3, 'traducteur');  
 -- ✅ Facilement extensible
 
 -- 4. Intégrité référentielle
@@ -1314,13 +1336,13 @@ SELECT
     a.nom || ' ' || a.prenom as auteur,
     COUNT(DISTINCT empr.id) as nb_emprunts,
     COUNT(DISTINCT l.id) as nb_livres_catalogue
-FROM auteurs a
-JOIN livres_auteurs la ON a.id = la.auteur_id
-JOIN livres l ON la.livre_id = l.id
-JOIN exemplaires ex ON l.id = ex.livre_id
-JOIN emprunts empr ON ex.id = empr.exemplaire_id
-GROUP BY a.id, a.nom, a.prenom
-ORDER BY nb_emprunts DESC;
+FROM auteurs a  
+JOIN livres_auteurs la ON a.id = la.auteur_id  
+JOIN livres l ON la.livre_id = l.id  
+JOIN exemplaires ex ON l.id = ex.livre_id  
+JOIN emprunts empr ON ex.id = empr.exemplaire_id  
+GROUP BY a.id, a.nom, a.prenom  
+ORDER BY nb_emprunts DESC;  
 ```
 
 ## Conclusion et perspectives
@@ -1346,7 +1368,7 @@ ORDER BY nb_emprunts DESC;
 
 ### 💡 Points clés à retenir
 
-1. **Normalisation = organisation logique**, pas complification
+1. **Normalisation = organisation logique**, pas complication
 2. **Chaque forme normale résout des problèmes spécifiques**
 3. **3NF est généralement suffisant** pour la plupart des applications
 4. **SQLite supporte parfaitement** la normalisation avancée
@@ -1358,4 +1380,4 @@ ORDER BY nb_emprunts DESC;
 
 **🎯 Vous savez maintenant** concevoir des bases de données SQLite propres, cohérentes et évolutives grâce à la normalisation !
 
-⏭️
+⏭️ [3.2 Relations entre tables et jointures complexes](/03-conception-modelisation-avancee/02-relations-tables-jointures-complexes.md)

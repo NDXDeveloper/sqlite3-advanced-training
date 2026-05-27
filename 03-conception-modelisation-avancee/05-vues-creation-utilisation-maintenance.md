@@ -35,25 +35,29 @@ Si la structure des tables change, les vues peuvent maintenir une interface stab
 ## Types de vues
 
 ### Vues simples
-Basées sur une seule table, généralement modifiables.
+Basées sur une seule table, sans jointure ni agrégation. **En SQLite elles restent en lecture seule** (cf. section « Modification des données à travers les vues » plus bas).
 
 ### Vues complexes
-Basées sur plusieurs tables avec jointures, groupements, ou fonctions d'agrégation. Généralement non modifiables directement.
+Basées sur plusieurs tables avec jointures, groupements, ou fonctions d'agrégation. Comme les vues simples, elles sont en lecture seule en SQLite : il faut un trigger `INSTEAD OF` pour autoriser les écritures.
 
 ## Création d'une vue
 
+Notation : `[ … ]` désigne une partie **optionnelle** et `a|b` un choix entre les variantes — c'est de la pseudo-syntaxe descriptive, pas du SQL exécutable.
+
 ### Syntaxe de base
-```sql
-CREATE VIEW nom_de_la_vue AS
-SELECT colonnes
-FROM table(s)
-WHERE conditions;
+
+```text
+CREATE VIEW nom_de_la_vue AS  
+SELECT colonnes  
+FROM table(s)  
+WHERE conditions;  
 ```
 
 ### Syntaxe complète
-```sql
-CREATE [TEMP|TEMPORARY] VIEW [IF NOT EXISTS] nom_de_la_vue [(colonnes)]
-AS SELECT requête;
+
+```text
+CREATE [TEMP|TEMPORARY] VIEW [IF NOT EXISTS] nom_de_la_vue [(colonnes)]  
+AS SELECT requête;  
 ```
 
 ## Exemples pratiques pour débutants
@@ -91,15 +95,19 @@ CREATE TABLE projets (
     statut TEXT DEFAULT 'En cours'
 );
 
--- Table d'association employé-projet
+-- Table d'association employé-projet (relation N:M)
 CREATE TABLE employe_projet (
     employe_id INTEGER,
     projet_id INTEGER,
     role TEXT,
     heures_allouees INTEGER,
-    PRIMARY KEY (employe_id, projet_id)
+    PRIMARY KEY (employe_id, projet_id),
+    FOREIGN KEY (employe_id) REFERENCES employes(id) ON DELETE CASCADE,
+    FOREIGN KEY (projet_id) REFERENCES projets(id) ON DELETE CASCADE
 );
 ```
+
+> 💡 Penser à `PRAGMA foreign_keys = ON;` au début de la session pour que les `FOREIGN KEY` ci-dessus soient effectivement vérifiées (cf. chapitre 3.3).
 
 ### Insérons quelques données de test
 
@@ -126,10 +134,10 @@ INSERT INTO projets VALUES
 ### Exemple 1 : Vue des employés actifs
 
 ```sql
-CREATE VIEW employes_actifs AS
-SELECT id, nom, prenom, email, salaire, departement_id
-FROM employes
-WHERE actif = 1;
+CREATE VIEW employes_actifs AS  
+SELECT id, nom, prenom, email, salaire, departement_id  
+FROM employes  
+WHERE actif = 1;  
 ```
 
 **Utilisation :**
@@ -138,16 +146,16 @@ WHERE actif = 1;
 SELECT * FROM employes_actifs;
 
 -- Filtrer sur la vue
-SELECT nom, prenom, salaire
-FROM employes_actifs
-WHERE salaire > 40000;
+SELECT nom, prenom, salaire  
+FROM employes_actifs  
+WHERE salaire > 40000;  
 ```
 
 ### Exemple 2 : Vue avec calculs
 
 ```sql
-CREATE VIEW salaires_avec_primes AS
-SELECT
+CREATE VIEW salaires_avec_primes AS  
+SELECT  
     id,
     nom,
     prenom,
@@ -159,8 +167,8 @@ SELECT
         WHEN salaire > 40000 THEN 'Moyen'
         ELSE 'Bas'
     END AS niveau_salaire
-FROM employes
-WHERE actif = 1;
+FROM employes  
+WHERE actif = 1;  
 ```
 
 ## Exemples de vues complexes avec jointures
@@ -168,8 +176,8 @@ WHERE actif = 1;
 ### Exemple 3 : Vue employés avec département
 
 ```sql
-CREATE VIEW employes_complet AS
-SELECT
+CREATE VIEW employes_complet AS  
+SELECT  
     e.id,
     e.nom,
     e.prenom,
@@ -178,9 +186,9 @@ SELECT
     d.nom AS nom_departement,
     d.budget AS budget_departement,
     e.date_embauche
-FROM employes e
-LEFT JOIN departements d ON e.departement_id = d.id
-WHERE e.actif = 1;
+FROM employes e  
+LEFT JOIN departements d ON e.departement_id = d.id  
+WHERE e.actif = 1;  
 ```
 
 **Utilisation :**
@@ -195,8 +203,8 @@ SELECT * FROM employes_complet WHERE nom_departement = 'Informatique';
 ### Exemple 4 : Vue avec agrégations
 
 ```sql
-CREATE VIEW statistiques_departements AS
-SELECT
+CREATE VIEW statistiques_departements AS  
+SELECT  
     d.nom AS departement,
     COUNT(e.id) AS nombre_employes,
     AVG(e.salaire) AS salaire_moyen,
@@ -205,9 +213,9 @@ SELECT
     SUM(e.salaire) AS masse_salariale,
     d.budget,
     ROUND((SUM(e.salaire) / d.budget) * 100, 2) AS pourcentage_budget
-FROM departements d
-LEFT JOIN employes e ON d.id = e.departement_id AND e.actif = 1
-GROUP BY d.id, d.nom, d.budget;
+FROM departements d  
+LEFT JOIN employes e ON d.id = e.departement_id AND e.actif = 1  
+GROUP BY d.id, d.nom, d.budget;  
 ```
 
 ## Vues avec colonnes nommées
@@ -215,14 +223,14 @@ GROUP BY d.id, d.nom, d.budget;
 Vous pouvez spécifier les noms des colonnes de la vue :
 
 ```sql
-CREATE VIEW resume_employes (identifiant, nom_complet, remuneration, service) AS
-SELECT
+CREATE VIEW resume_employes (identifiant, nom_complet, remuneration, service) AS  
+SELECT  
     id,
     nom || ' ' || prenom,
     salaire,
     departement_id
-FROM employes
-WHERE actif = 1;
+FROM employes  
+WHERE actif = 1;  
 ```
 
 ## Vues temporaires
@@ -230,48 +238,43 @@ WHERE actif = 1;
 Les vues temporaires existent seulement pendant la session :
 
 ```sql
-CREATE TEMP VIEW employes_temp AS
-SELECT * FROM employes WHERE date_embauche > '2023-01-01';
+CREATE TEMP VIEW employes_temp AS  
+SELECT * FROM employes WHERE date_embauche > '2023-01-01';  
 ```
 
 ## Modification des données à travers les vues
 
-### Vues modifiables
-Les vues **simples** (basées sur une seule table, sans agrégations) sont modifiables :
+> ⚠️ **Spécificité SQLite importante** : **toutes les vues SQLite sont en lecture seule par défaut**, contrairement à PostgreSQL/MySQL où les vues simples basées sur une seule table sont parfois automatiquement modifiables. Toute tentative d'`INSERT`, `UPDATE` ou `DELETE` directement sur une vue échoue avec :  
+>  
+> ```
+> Error: cannot modify <nom_vue> because it is a view
+> ```
+>  
+> Pour rendre une vue modifiable en SQLite, il faut **obligatoirement** créer un trigger `INSTEAD OF` qui définit le comportement de chaque opération de modification.
+
+### Tentative d'UPDATE direct (échec)
 
 ```sql
--- Cette vue est modifiable
-CREATE VIEW employes_info AS
-SELECT id, nom, prenom, email, salaire
-FROM employes;
+CREATE VIEW employes_info AS  
+SELECT id, nom, prenom, email, salaire  
+FROM employes;  
 
--- Vous pouvez faire des INSERT, UPDATE, DELETE
+-- ❌ Cette requête échoue : SQLite refuse d'écrire sur une vue
 UPDATE employes_info SET salaire = salaire * 1.05 WHERE id = 1;
+-- Error: cannot modify employes_info because it is a view
 ```
 
-### Vues non modifiables
-Les vues **complexes** ne sont généralement pas modifiables directement :
+### Rendre une vue modifiable avec INSTEAD OF
 
 ```sql
--- Cette vue n'est PAS modifiable (jointure et agrégation)
-CREATE VIEW stats_complexe AS
-SELECT d.nom, COUNT(e.id) as nb_employes
-FROM departements d
-LEFT JOIN employes e ON d.id = e.departement_id
-GROUP BY d.id, d.nom;
-```
-
-### Rendre les vues complexes modifiables avec INSTEAD OF
-
-```sql
-CREATE VIEW vue_employe_departement AS
-SELECT
+CREATE VIEW vue_employe_departement AS  
+SELECT  
     e.id as employe_id,
     e.nom,
     e.prenom,
     d.nom as departement_nom
-FROM employes e
-JOIN departements d ON e.departement_id = d.id;
+FROM employes e  
+JOIN departements d ON e.departement_id = d.id;  
 
 -- Trigger pour permettre les modifications
 CREATE TRIGGER update_vue_employe_departement
@@ -282,6 +285,10 @@ BEGIN
     WHERE id = NEW.employe_id;
 END;
 ```
+
+> ⚠️ **Piège des `INSTEAD OF UPDATE` partiels** : le trigger ci-dessus se déclenche pour **tout** `UPDATE` sur la vue, mais ne propage que `nom` et `prenom`. Une requête `UPDATE vue_employe_departement SET departement_nom = 'X' …` **ne renvoie pas d'erreur** : le trigger s'exécute et ignore silencieusement `NEW.departement_nom`. Pour les colonnes non gérées, on peut soit :  
+> - lever explicitement une erreur dans le trigger via `RAISE(ABORT, ...)` quand on détecte un changement non autorisé (avec une garde `WHEN NEW.departement_nom != OLD.departement_nom`),  
+> - ou implémenter la propagation complète (mettre à jour `employes.departement_id` à partir du nouveau `departement_nom`, ce qui requiert un `SELECT id FROM departements WHERE nom = NEW.departement_nom`).
 
 ## Gestion et maintenance des vues
 
@@ -310,10 +317,10 @@ SQLite ne supporte pas `ALTER VIEW`. Il faut supprimer et recréer :
 DROP VIEW IF EXISTS employes_actifs;
 
 -- Recréer avec la nouvelle définition
-CREATE VIEW employes_actifs AS
-SELECT id, nom, prenom, email, salaire, departement_id, date_embauche
-FROM employes
-WHERE actif = 1;
+CREATE VIEW employes_actifs AS  
+SELECT id, nom, prenom, email, salaire, departement_id, date_embauche  
+FROM employes  
+WHERE actif = 1;  
 ```
 
 ### Supprimer une vue
@@ -327,22 +334,22 @@ DROP VIEW IF EXISTS nom_de_la_vue;
 ### Vue pour les rapports
 
 ```sql
-CREATE VIEW rapport_mensuel AS
-SELECT
+CREATE VIEW rapport_mensuel AS  
+SELECT  
     strftime('%Y-%m', date_embauche) AS mois_embauche,
     COUNT(*) AS nouveaux_employes,
     AVG(salaire) AS salaire_moyen_nouveaux
-FROM employes
-WHERE actif = 1
-GROUP BY strftime('%Y-%m', date_embauche)
-ORDER BY mois_embauche DESC;
+FROM employes  
+WHERE actif = 1  
+GROUP BY strftime('%Y-%m', date_embauche)  
+ORDER BY mois_embauche DESC;  
 ```
 
 ### Vue pour la sécurité (masquer des colonnes sensibles)
 
 ```sql
-CREATE VIEW employes_public AS
-SELECT
+CREATE VIEW employes_public AS  
+SELECT  
     id,
     nom,
     prenom,
@@ -352,8 +359,8 @@ SELECT
         WHEN salaire > 40000 THEN 'Moyen'
         ELSE 'Standard'
     END AS niveau_salaire
-FROM employes
-WHERE actif = 1;
+FROM employes  
+WHERE actif = 1;  
 -- Le salaire exact n'est pas visible
 ```
 
@@ -375,8 +382,8 @@ INSERT INTO categories VALUES
     (5, 'Desktop', 2);
 
 -- Vue récursive pour afficher la hiérarchie
-CREATE VIEW hierarchie_categories AS
-WITH RECURSIVE cat_hierarchie(id, nom, parent_id, niveau, chemin) AS (
+CREATE VIEW hierarchie_categories AS  
+WITH RECURSIVE cat_hierarchie(id, nom, parent_id, niveau, chemin) AS (  
     -- Cas de base : catégories racines
     SELECT id, nom, parent_id, 0, nom
     FROM categories
@@ -395,38 +402,40 @@ SELECT * FROM cat_hierarchie ORDER BY chemin;
 ## Bonnes pratiques
 
 ### 1. Nommage cohérent
-```sql
+
+```text
 -- Préfixer les vues pour les identifier facilement
-CREATE VIEW v_employes_actifs AS ...
-CREATE VIEW vue_rapport_mensuel AS ...
+CREATE VIEW v_employes_actifs AS ...  
+CREATE VIEW vue_rapport_mensuel AS ...  
 ```
 
 ### 2. Documenter les vues complexes
-```sql
+
+```text
 -- Vue pour le tableau de bord RH
 -- Affiche les statistiques par département avec calculs de performance
-CREATE VIEW v_dashboard_rh AS
-SELECT
+CREATE VIEW v_dashboard_rh AS  
+SELECT  
     -- Colonnes et calculs...
 ```
 
 ### 3. Optimisation des performances
 ```sql
 -- Créer des index sur les colonnes utilisées dans les vues fréquemment consultées
-CREATE INDEX idx_employes_departement ON employes(departement_id);
-CREATE INDEX idx_employes_actif ON employes(actif);
+CREATE INDEX idx_employes_departement ON employes(departement_id);  
+CREATE INDEX idx_employes_actif ON employes(actif);  
 ```
 
 ### 4. Vues avec paramètres simulés
 ```sql
 -- Vue pour les employés d'un département (utiliser avec WHERE)
-CREATE VIEW v_employes_par_dept AS
-SELECT
+CREATE VIEW v_employes_par_dept AS  
+SELECT  
     e.*,
     d.nom as dept_nom
-FROM employes e
-JOIN departements d ON e.departement_id = d.id
-WHERE e.actif = 1;
+FROM employes e  
+JOIN departements d ON e.departement_id = d.id  
+WHERE e.actif = 1;  
 
 -- Utilisation : SELECT * FROM v_employes_par_dept WHERE dept_nom = 'Informatique';
 ```
@@ -463,12 +472,25 @@ Créez une vue publique qui masque les informations sensibles (salaires exacts, 
 ## Optimisation des performances des vues
 
 ### 1. Utiliser des vues matérialisées (simulation)
+
 ```sql
 -- SQLite n'a pas de vues matérialisées natives, mais on peut simuler :
-CREATE TABLE cache_statistiques_dept AS
-SELECT * FROM statistiques_departements;
+CREATE TABLE cache_statistiques_dept AS  
+SELECT * FROM statistiques_departements;  
+```
 
--- Recréer périodiquement avec un trigger ou une tâche planifiée
+> ⚠️ **SQLite n'a pas de scheduler natif** (pas d'équivalent à `pg_cron` ou aux *Events* MySQL). Pour rafraîchir cette table-cache périodiquement, il faut donc choisir l'une de ces deux approches :  
+>  
+> 1. **Côté SGBD — triggers sur les tables sources** : un trigger `AFTER INSERT/UPDATE/DELETE` sur chaque table impactée (`employes`, `departements`, …) qui fait un `DELETE FROM cache_statistiques_dept; INSERT INTO cache_statistiques_dept SELECT …` ou un `UPDATE` ciblé. Avantage : temps réel. Inconvénient : pénalise les écritures fréquentes.  
+>  
+> 2. **Côté système — cron + script** : un script shell appelé par `cron` (Linux), le *Planificateur de tâches* (Windows) ou `launchd` (macOS) exécute périodiquement `sqlite3 ma_base.db < refresh_cache.sql`. Avantage : pas d'impact sur les écritures. Inconvénient : décalage entre le moment où les données changent et le rafraîchissement du cache.
+
+```sql
+-- Exemple de script de rafraîchissement (refresh_cache.sql)
+BEGIN;
+    DELETE FROM cache_statistiques_dept;
+    INSERT INTO cache_statistiques_dept SELECT * FROM statistiques_departements;
+COMMIT;
 ```
 
 ### 2. Index appropriés
@@ -480,13 +502,13 @@ CREATE INDEX idx_employes_departement_actif ON employes(departement_id, actif);
 ### 3. Limiter la complexité
 ```sql
 -- Éviter les vues trop complexes, préférer plusieurs vues simples
-CREATE VIEW v_employes_base AS
-SELECT id, nom, prenom, departement_id FROM employes WHERE actif = 1;
+CREATE VIEW v_employes_base AS  
+SELECT id, nom, prenom, departement_id FROM employes WHERE actif = 1;  
 
-CREATE VIEW v_employes_avec_dept AS
-SELECT e.*, d.nom as dept_nom
-FROM v_employes_base e
-JOIN departements d ON e.departement_id = d.id;
+CREATE VIEW v_employes_avec_dept AS  
+SELECT e.*, d.nom as dept_nom  
+FROM v_employes_base e  
+JOIN departements d ON e.departement_id = d.id;  
 ```
 
 ## Résumé
@@ -495,18 +517,19 @@ Les vues SQLite sont un outil puissant pour simplifier l'accès aux données et 
 
 **Points clés à retenir :**
 - Les vues ne stockent pas de données, elles affichent le résultat de requêtes
-- Les vues simples sont modifiables, les vues complexes généralement non
+- **En SQLite, TOUTES les vues sont en lecture seule par défaut** (différence majeure avec PostgreSQL/MySQL)
+- Pour qu'une vue accepte `INSERT`/`UPDATE`/`DELETE`, il faut créer des triggers `INSTEAD OF`
 - Elles améliorent la réutilisabilité et la sécurité
-- Attention aux performances avec les vues complexes
-- Utilisez `INSTEAD OF` triggers pour rendre modifiables les vues complexes
+- Attention aux performances avec les vues complexes (recalcul à chaque requête)
 
 **Syntaxe à mémoriser :**
-```sql
-CREATE VIEW nom_vue AS SELECT ...;
-DROP VIEW nom_vue;
-SELECT name FROM sqlite_master WHERE type = 'view';
+
+```text
+CREATE VIEW nom_vue AS SELECT ...;  
+DROP VIEW nom_vue;  
+SELECT name FROM sqlite_master WHERE type = 'view';  
 ```
 
-Dans le prochain chapitre, nous aborderons les requêtes avancées et les techniques d'optimisation.
+Dans le prochain module (Module 4), nous aborderons les requêtes avancées et les techniques d'optimisation.
 
-⏭️
+⏭️ [Module 4 : Requêtes avancées et optimisation](/04-requetes-avancees-optimisation/README.md)

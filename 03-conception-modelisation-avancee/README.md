@@ -25,20 +25,13 @@
 
 Ce module vous guide dans la conception de bases de données SQLite robustes et évolutives :
 
-### 3.1 Normalisation des données (1NF, 2NF, 3NF)
-Maîtrise des formes normales pour éliminer la redondance et garantir la cohérence des données.
-
-### 3.2 Relations entre tables et jointures complexes
-Conception et implémentation de relations sophistiquées avec leurs implications pratiques.
-
-### 3.3 Gestion des clés étrangères et contraintes référentielles
-Techniques avancées pour maintenir l'intégrité référentielle dans l'écosystème SQLite.
-
-### 3.4 Triggers : création, types et cas d'usage
-Automatisation des traitements avec les déclencheurs pour maintenir la logique métier.
-
-### 3.5 Vues : création, utilisation et maintenance
-Simplification de l'accès aux données complexes et encapsulation de la logique métier.
+| # | Section | Sujet principal | Lien |
+|--:|---------|-----------------|------|
+| 3.1 | **Normalisation** | 1NF, 2NF, 3NF — éliminer la redondance | [→ 3.1](/03-conception-modelisation-avancee/01-normalisation-donnees-1nf-2nf-3nf.md) |
+| 3.2 | **Relations & jointures** | one-to-one, one-to-many, many-to-many | [→ 3.2](/03-conception-modelisation-avancee/02-relations-tables-jointures-complexes.md) |
+| 3.3 | **Clés étrangères** | `FOREIGN KEY`, `ON DELETE/UPDATE`, intégrité référentielle | [→ 3.3](/03-conception-modelisation-avancee/03-gestion-cles-etrangeres-contraintes-referentielles.md) |
+| 3.4 | **Triggers** | `BEFORE`/`AFTER`/`INSTEAD OF`, automatisation métier | [→ 3.4](/03-conception-modelisation-avancee/04-triggers-creation-types-cas-usage.md) |
+| 3.5 | **Vues** | `CREATE VIEW`, `INSTEAD OF`, encapsulation | [→ 3.5](/03-conception-modelisation-avancee/05-vues-creation-utilisation-maintenance.md) |
 
 ## Pourquoi la conception avancée est cruciale ?
 
@@ -93,11 +86,11 @@ Tout au long de ce module, nous concevrons ensemble un **système de gestion d'�
 
 ### 📈 Évolution progressive
 
-**3.1 Normalisation** → Structure de base normalisée et cohérente
-**3.2 Relations** → Liaisons complexes entre toutes les entités
-**3.3 Contraintes** → Intégrité référentielle bulletproof
-**3.4 Triggers** → Automatisations métier (calcul de moyennes, logs)
-**3.5 Vues** → Interfaces simplifiées pour les utilisateurs finaux
+**3.1 Normalisation** → Structure de base normalisée et cohérente  
+**3.2 Relations** → Liaisons complexes entre toutes les entités  
+**3.3 Contraintes** → Intégrité référentielle bulletproof  
+**3.4 Triggers** → Automatisations métier (calcul de moyennes, logs)  
+**3.5 Vues** → Interfaces simplifiées pour les utilisateurs finaux  
 
 ## Méthodologie d'apprentissage
 
@@ -138,26 +131,26 @@ Chaque chapitre suit une progression logique :
 **Pas de schémas multiples :**
 ```sql
 -- ❌ Impossible avec SQLite
-CREATE SCHEMA comptabilite;
-CREATE SCHEMA ressources_humaines;
+CREATE SCHEMA comptabilite;  
+CREATE SCHEMA ressources_humaines;  
 
 -- ✅ Solutions SQLite
-CREATE TABLE compta_factures (...);  -- Préfixe
-CREATE TABLE rh_employes (...);      -- Préfixe
+CREATE TABLE compta_factures (...);  -- Préfixe  
+CREATE TABLE rh_employes (...);      -- Préfixe  
 -- OU bases séparées avec ATTACH
 ```
 
 **Pas de rôles utilisateur :**
 ```sql
 -- ❌ Impossible avec SQLite
-CREATE ROLE comptable;
-GRANT SELECT ON factures TO comptable;
+CREATE ROLE comptable;  
+GRANT SELECT ON factures TO comptable;  
 
 -- ✅ Solutions SQLite : Conception défensive
-CREATE VIEW factures_publiques AS
-SELECT id, montant, date_facture
-FROM factures
-WHERE confidentiel = 0;
+CREATE VIEW factures_publiques AS  
+SELECT id, montant, date_facture  
+FROM factures  
+WHERE confidentiel = 0;  
 ```
 
 **Types dynamiques à contrôler :**
@@ -176,7 +169,7 @@ CREATE TABLE produits (
 **Simplicité architecturale :**
 - Déploiement = copie de fichier
 - Pas de configuration serveur complexe
-- Tests en isolation trivials
+- Tests en isolation triviaux
 
 **Performance sur lectures :**
 - Optimisation pour accès local
@@ -195,8 +188,8 @@ CREATE TABLE produits (
 **Niveau 1 : Données brutes**
 ```sql
 -- Tables de base normalisées
-CREATE TABLE etudiants_base (...);
-CREATE TABLE cours_base (...);
+CREATE TABLE etudiants_base (...);  
+CREATE TABLE cours_base (...);  
 ```
 
 **Niveau 2 : Logique métier**
@@ -210,8 +203,8 @@ CREATE TABLE inscriptions (...) CHECK (...);
 **Niveau 3 : Interfaces utilisateur**
 ```sql
 -- Vues simplifiées pour les applications
-CREATE VIEW bulletin_etudiant AS ...;
-CREATE VIEW planning_professeur AS ...;
+CREATE VIEW bulletin_etudiant AS ...;  
+CREATE VIEW planning_professeur AS ...;  
 ```
 
 ### 🔄 Patterns temporels
@@ -253,8 +246,8 @@ CREATE TABLE etudiants (
 
 ### 📊 Nouvelle perspective
 
-**Avant (Module 2) :** "Comment utiliser SQLite ?"
-**Maintenant (Module 3) :** "Comment bien concevoir avec SQLite ?"
+**Avant (Module 2) :** "Comment utiliser SQLite ?"  
+**Maintenant (Module 3) :** "Comment bien concevoir avec SQLite ?"  
 
 **Changement de mentalité :**
 - De l'exécution à la conception
@@ -285,8 +278,8 @@ CREATE TABLE etudiants (
 
 Ce module représente un **saut qualitatif** par rapport au Module 2 :
 
-**Module 2 :** Apprendre les outils
-**Module 3 :** Maîtriser l'art de bien s'en servir
+**Module 2 :** Apprendre les outils  
+**Module 3 :** Maîtriser l'art de bien s'en servir  
 
 **Attendez-vous à :**
 - Concepts plus abstraits mais essentiels
@@ -342,4 +335,4 @@ Si vous avez terminé le Module 2 avec succès, vous avez toutes les bases néce
 
 **💡 Conseil pour commencer** : Gardez en tête le projet école - nous allons le construire ensemble, étape par étape, en appliquant chaque concept appris.
 
-⏭️
+⏭️ [3.1 Normalisation des données (1NF, 2NF, 3NF)](/03-conception-modelisation-avancee/01-normalisation-donnees-1nf-2nf-3nf.md)
