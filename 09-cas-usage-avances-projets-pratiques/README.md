@@ -14,7 +14,7 @@ SQLite n'est pas seulement une base de données d'apprentissage ou de prototypag
 
 - **Architecture sans serveur** : Pas de processus séparé à gérer, réduction de la complexité opérationnelle
 - **Déploiement simplifié** : Un seul fichier, aucune installation côté serveur requise
-- **Performance exceptionnelle** : Plus rapide que la plupart des SGBD pour les opérations de lecture
+- **Performance exceptionnelle** : Plus rapide que la plupart des SGBD client-serveur pour les opérations de lecture locales (pas de latence réseau, pas d'IPC)
 - **Fiabilité prouvée** : Utilisé par des milliards d'appareils dans le monde
 - **Empreinte mémoire réduite** : Idéal pour les environnements contraints
 - **Conformité ACID** : Garanties transactionnelles complètes malgré sa simplicité
@@ -46,7 +46,7 @@ SQLite excelle particulièrement dans :
 Ce module adopte une approche pratique avec :
 
 - **Études de cas réels** : Analyse de projets existants utilisant SQLite
-- **Exercices hands-on** : Développement guidé d'applications complètes
+- **Exemples intégrés** : tous les exemples sont **dans les fichiers `.md`**, prêts à copier-coller et exécuter
 - **Benchmarks et comparaisons** : Mesure de performances dans différents contextes
 - **Patterns et anti-patterns** : Bonnes pratiques et écueils à éviter
 - **Code review** : Analyse critique d'implémentations
@@ -68,8 +68,8 @@ Ce module se structure autour de cinq axes majeurs :
 ### 1. Applications mobiles et embarquées
 Exploration de SQLite dans l'écosystème mobile (iOS, Android) et les systèmes embarqués, avec focus sur l'optimisation pour les ressources limitées et la synchronisation de données.
 
-### 2. Analyse de données et Business Intelligence
-Utilisation de SQLite comme moteur d'analyse pour le traitement de datasets, la création de tableaux de bord et l'intégration avec des outils de visualisation.
+### 2. Analyse de données
+Utilisation de SQLite comme moteur d'analyse pour le traitement de datasets, la création de tableaux de bord et l'intégration avec des outils de visualisation. Comparaison avec les alternatives modernes (DuckDB, Polars) pour les charges analytiques lourdes.
 
 ### 3. Migration et interopérabilité
 Stratégies et outils pour migrer des données entre SQLite et d'autres formats (CSV, JSON, XML, autres SGBD), avec gestion des transformations complexes.
@@ -98,17 +98,55 @@ Pour tirer le meilleur parti de ce module, vous devrez disposer de :
 ### Environnements de test
 - **Docker** : Conteneurisation des environnements
 - **Frameworks de test** : pytest, jest, ou équivalents
-- **Outils de benchmarking** : SQLite analyzer, profilers
+- **Outils de benchmarking** : `sqlite3_analyzer` ([téléchargeable sur sqlite.org](https://sqlite.org/download.html)), `py-spy`, `cProfile`
 
-## Évaluation et livrables attendus
+## Prérequis Python pour ce module
 
-Votre progression sera évaluée à travers :
+Plusieurs bibliothèques sont utilisées dans les exemples. Pour exécuter l'ensemble du module, installez :
 
-1. **Exercices pratiques** : Implémentations courtes et ciblées
-2. **Projet fil rouge** : Application complète développée tout au long du module
-3. **Analyses comparatives** : Benchmarks et études de performance
-4. **Documentation technique** : Rédaction de guides d'implémentation
-5. **Présentation finale** : Synthèse de votre projet et des apprentissages
+```bash
+# Section 9.2 (analyse de données)
+pip install pandas matplotlib seaborn plotly chardet
+
+# Section 9.3 (migration)
+pip install openpyxl xlsxwriter pymysql psycopg2-binary
+
+# Section 9.4 (projet web)
+pip install Flask Werkzeug Pillow python-dotenv
+
+# Section 9.5 (tests)
+pip install pytest pytest-cov pytest-benchmark faker
+```
+
+> ⚠️ **Piège classique : NE PAS `pip install sqlite3`** — le module `sqlite3` est dans la **bibliothèque standard** Python, déjà installé. Le faire installerait un package PyPI tiers homonyme, NON compatible avec le module standard.
+
+## Boilerplate à mettre en haut de tout module (rappel ch08)
+
+Les exemples du chapitre supposent que vous appliquez le **boilerplate** vu en 8.2-8.5 :
+
+```python
+import sqlite3  
+from datetime import datetime, timezone  
+
+# 1. Adapter datetime → UTC (Python 3.12+ DeprecationWarning + piège local/UTC)
+def _adapter_dt_utc(d):
+    # Python 3.6+ : .astimezone() sur un naïf l'interprète comme local time
+    # et le convertit en UTC, donc une seule branche suffit.
+    return d.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+sqlite3.register_adapter(datetime, _adapter_dt_utc)
+
+# 2. À l'init de chaque base : journal_mode=WAL (persistant, cf. ch08 README)
+def init_base(chemin):
+    conn = sqlite3.connect(chemin)
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.close()
+
+# 3. À chaque ouverture de connexion : foreign_keys=ON (per-connection)
+def ouvrir_connexion(chemin, **kwargs):
+    conn = sqlite3.connect(chemin, **kwargs)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+```
 
 ## Perspectives d'évolution
 
@@ -123,4 +161,4 @@ Ce module vous préparera à :
 
 *Prêt à transformer vos connaissances SQLite en solutions concrètes et performantes ? Les prochaines sections vous guideront à travers des cas d'usage passionnants qui révéleront tout le potentiel de cette base de données exceptionnelle.*
 
-⏭️
+⏭️ [9.1 SQLite pour les applications mobiles](/09-cas-usage-avances-projets-pratiques/01-sqlite-applications-mobiles.md)

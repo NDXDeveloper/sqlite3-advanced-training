@@ -35,6 +35,9 @@ pip install pytest-benchmark
 
 # Pour les mocks et fixtures avancées
 pip install pytest-mock factory-boy
+
+# Pour les rapports JSON (utilisés par TestDashboard plus bas)
+pip install pytest-json-report
 ```
 
 ### Structure du projet de test
@@ -72,37 +75,60 @@ tests/
 
 ```python
 # tests/conftest.py
-import pytest
-import tempfile
-import os
-import sqlite3
-from pathlib import Path
+import pytest  
+import tempfile  
+import os  
+import sqlite3  
+from pathlib import Path  
 
 # Ajouter le dossier parent au path pour les imports
-import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import sys  
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))  
 
-from app import create_app
-from app.database import DatabaseManager
-from app.models import Livre, Utilisateur, Emprunt, Genre
+from app import create_app  
+from app.database import DatabaseManager  
+from app.models import Livre, Utilisateur, Emprunt, Genre  
 
 @pytest.fixture(scope='session')
 def test_app():
-    """Application Flask configurée pour les tests (scope session)"""
-    app = create_app('testing')
+    """Application Flask configurée pour les tests.
 
-    # Configuration spécifique aux tests
+    ⚠️ PIÈGE évité : `TestingConfig.DATABASE_PATH = ':memory:'` (cf. config.py)
+       crée une base DIFFÉRENTE pour chaque `sqlite3.connect(':memory:')` —
+       inutilisable car l'app et la fixture admin_user ne verraient PAS les
+       mêmes données. On force ici un fichier temporaire partagé pour la
+       session de tests.
+    """
+    import tempfile
+    fd, db_path = tempfile.mkstemp(suffix='_test_app.db')
+    os.close(fd)
+
+    app = create_app('testing')
     app.config.update({
         'TESTING': True,
         'WTF_CSRF_ENABLED': False,
-        'SECRET_KEY': 'test-secret-key'
+        'SECRET_KEY': 'test-secret-key',
+        # Override du ':memory:' de TestingConfig par un fichier partageable
+        'DATABASE_PATH': db_path,
     })
 
-    return app
+    # Initialiser le schéma dans le fichier de test
+    DatabaseManager(db_path)
+
+    yield app
+
+    # Nettoyage en fin de session
+    if os.path.exists(db_path):
+        os.unlink(db_path)
 
 @pytest.fixture
 def app(test_app):
-    """Instance d'application pour chaque test"""
+    """Instance d'application pour chaque test.
+
+    ⚠️ Note : la base est PARTAGÉE entre tous les tests d'une même session.
+       Pour une isolation totale par test, utiliser un `fixture function-scoped`
+       avec recréation du schéma ; mais c'est plus lent (~50ms/test).
+    """
     with test_app.app_context():
         yield test_app
 
@@ -113,8 +139,12 @@ def client(app):
 
 @pytest.fixture
 def temp_db():
-    """Base de données temporaire pour chaque test"""
-    # Créer un fichier temporaire
+    """Base de données temporaire pour chaque test.
+
+    ⚠️ Windows : `os.unlink()` peut échouer avec PermissionError si une
+       connexion sqlite est encore ouverte sur le fichier. On capture
+       l'erreur pour ne pas masquer le test réel (cf. PEP 446).
+    """
     fd, path = tempfile.mkstemp(suffix='.db')
     os.close(fd)
 
@@ -123,16 +153,35 @@ def temp_db():
 
     yield path
 
-    # Nettoyage
+    # Nettoyage (tolérant aux locks Windows résiduels)
     if os.path.exists(path):
-        os.unlink(path)
+        try:
+            os.unlink(path)
+        except PermissionError:
+            pass  # Le fichier sera nettoyé par le système au reboot
 
 @pytest.fixture
 def memory_db():
-    """Base de données en mémoire (plus rapide)"""
-    db_path = ':memory:'
+    """Base de données en mémoire partagée (plus rapide qu'un fichier temp).
+
+    ⚠️ PIÈGE 1 : `sqlite3.connect(':memory:')` crée une base PAR connexion.
+       Pour partager entre plusieurs connexions, on utilise une URI
+       `'file::memory:?cache=shared'` + `uri=True`.
+
+    ⚠️ PIÈGE 2 : pour que les **modèles** (qui font `sqlite3.connect(self.db_path)`)
+       voient cette base, leur `get_connection()` doit aussi utiliser `uri=True`
+       quand le path commence par `file:`. À adapter dans BaseModel :
+         conn = sqlite3.connect(self.db_path, uri=self.db_path.startswith('file:'))
+
+       Si vous ne pouvez pas modifier BaseModel, utilisez plutôt la fixture
+       `temp_db` (fichier temporaire) — plus simple.
+    """
+    db_path = 'file::memory:?cache=shared'
+    # On garde une connexion ouverte pour maintenir la base en vie pendant la fixture
+    conn = sqlite3.connect(db_path, uri=True)
     db_manager = DatabaseManager(db_path)
     yield db_path
+    conn.close()
 
 @pytest.fixture
 def db_with_data(temp_db):
@@ -143,41 +192,48 @@ def db_with_data(temp_db):
     yield temp_db
 
 @pytest.fixture
-def authenticated_user(client):
-    """Utilisateur connecté pour les tests nécessitant une auth"""
-    # Créer un utilisateur de test
+def authenticated_user(client, app):
+    """Utilisateur connecté pour les tests nécessitant une auth.
+
+    ⚠️ Note : la route /register attend 'password' (form data), mais
+    Utilisateur.create() attend 'mot_de_passe'. Vérifier le mapping dans
+    routes.register avant d'utiliser cette fixture.
+    """
     user_data = {
         'nom': 'Test User',
         'email': 'test@example.com',
         'password': 'testpass123'
     }
-
-    # S'inscrire
     client.post('/register', data=user_data)
-
-    # Se connecter
-    response = client.post('/login', data={
+    client.post('/login', data={
         'email': user_data['email'],
         'password': user_data['password']
     })
-
     return user_data
 
 @pytest.fixture
-def admin_user(client):
-    """Utilisateur admin connecté"""
-    from app.models import Utilisateur
+def admin_user(client, app):
+    """Utilisateur admin connecté.
+
+    ⚠️ BUG ÉVITÉ : l'ancienne version ouvrait une connexion `:memory:` SÉPARÉE
+       et y faisait l'INSERT, qui était donc perdu (chaque `connect(':memory:')`
+       crée une base différente). Il faut utiliser la VRAIE base de l'app
+       (récupérée via app.config['DATABASE_PATH']).
+    """
     from werkzeug.security import generate_password_hash
+    db_path = app.config['DATABASE_PATH']
 
-    # Créer un admin directement en base
-    with sqlite3.connect(':memory:') as conn:
-        conn.execute('''
-            INSERT INTO utilisateurs (nom, email, mot_de_passe_hash, est_admin)
-            VALUES (?, ?, ?, ?)
-        ''', ('Admin Test', 'admin@test.com', generate_password_hash('admin123'), 1))
+    # Créer l'admin dans la BASE DE L'APP (pas une base ':memory:' séparée)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO utilisateurs (nom, email, mot_de_passe_hash, est_admin) "
+            "VALUES (?, ?, ?, ?)",
+            ('Admin Test', 'admin@test.com', generate_password_hash('admin123'), 1)
+        )
+        conn.commit()
 
-    # Se connecter comme admin
-    response = client.post('/login', data={
+    # Se connecter via l'API
+    client.post('/login', data={
         'email': 'admin@test.com',
         'password': 'admin123'
     })
@@ -189,9 +245,9 @@ def admin_user(client):
 
 ```python
 # tests/fixtures/sample_data.py
-import sqlite3
-from datetime import datetime, timedelta
-from werkzeug.security import generate_password_hash
+import sqlite3  
+from datetime import datetime, timedelta  
+from werkzeug.security import generate_password_hash  
 
 def create_sample_data(db_path):
     """Crée un jeu de données de test complet"""
@@ -237,17 +293,29 @@ def create_sample_data(db_path):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ''', livres_data)
 
-        # Emprunts de test (quelques uns actifs, d'autres terminés)
-        now = datetime.now()
+        # Emprunts de test (quelques uns actifs, d'autres terminés).
+        # ⚠️ Utiliser UTC pour cohérence avec CURRENT_TIMESTAMP SQLite.
+        #    `datetime.now()` (local) introduirait un décalage selon le fuseau.
+        # ⚠️ On formate explicitement en string ISO sans microsecondes pour
+        #    matcher le format de `CURRENT_TIMESTAMP` ('YYYY-MM-DD HH:MM:SS') ;
+        #    sinon l'adapter datetime par défaut (Python 3.11) ajoute les
+        #    microsecondes et Python 3.12+ émet un DeprecationWarning.
+        from datetime import timezone
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        def fmt(d):
+            return d.strftime('%Y-%m-%d %H:%M:%S')
+
         emprunts_data = [
             # Emprunts actifs
-            (1, 1, now - timedelta(days=5), now + timedelta(days=9), None, 'actif', None),
-            (2, 2, now - timedelta(days=10), now + timedelta(days=4), None, 'actif', None),
+            (1, 1, fmt(now - timedelta(days=5)),  fmt(now + timedelta(days=9)), None, 'actif', None),
+            (2, 2, fmt(now - timedelta(days=10)), fmt(now + timedelta(days=4)), None, 'actif', None),
             # Emprunt en retard
-            (3, 1, now - timedelta(days=20), now - timedelta(days=6), None, 'actif', None),
+            (3, 1, fmt(now - timedelta(days=20)), fmt(now - timedelta(days=6)), None, 'actif', None),
             # Emprunts terminés
-            (4, 2, now - timedelta(days=30), now - timedelta(days=16), now - timedelta(days=15), 'retourne', 'Très bon livre'),
-            (5, 1, now - timedelta(days=45), now - timedelta(days=31), now - timedelta(days=28), 'retourne', None)
+            (4, 2, fmt(now - timedelta(days=30)), fmt(now - timedelta(days=16)),
+                   fmt(now - timedelta(days=15)), 'retourne', 'Très bon livre'),
+            (5, 1, fmt(now - timedelta(days=45)), fmt(now - timedelta(days=31)),
+                   fmt(now - timedelta(days=28)), 'retourne', None),
         ]
 
         conn.executemany('''
@@ -294,10 +362,10 @@ def get_sample_user_data():
 
 ```python
 # tests/unit/test_models.py
-import pytest
-import sqlite3
-from app.models import Livre, Utilisateur, Emprunt, Genre
-from tests.fixtures.sample_data import get_sample_book_data, get_sample_user_data
+import pytest  
+import sqlite3  
+from app.models import Livre, Utilisateur, Emprunt, Genre  
+from tests.fixtures.sample_data import get_sample_book_data, get_sample_user_data  
 
 class TestLivreModel:
     """Tests unitaires pour le modèle Livre"""
@@ -323,21 +391,26 @@ class TestLivreModel:
         assert livre_id > 0
 
     def test_create_livre_missing_required_fields(self, memory_db):
-        """Test d'échec de création avec champs obligatoires manquants"""
+        """Test d'échec de création avec champs obligatoires manquants.
+
+        ⚠️ `pytest.raises(Exception)` est trop permissif (capturerait aussi
+           KeyboardInterrupt). On cible les exceptions attendues :
+           - KeyError : si `livre_data['titre']` est absent ET que `create()`
+             y accède sans `.get()` (cas actuel : c'est `livre_data['titre']`)
+           - sqlite3.IntegrityError : si la contrainte NOT NULL échoue
+        """
         livre_model = Livre(memory_db)
 
         # Test sans titre
         livre_data = get_sample_book_data()
         del livre_data['titre']
-
-        with pytest.raises(Exception):
+        with pytest.raises((KeyError, sqlite3.IntegrityError)):
             livre_model.create(livre_data)
 
         # Test sans auteur
         livre_data = get_sample_book_data()
         del livre_data['auteur']
-
-        with pytest.raises(Exception):
+        with pytest.raises((KeyError, sqlite3.IntegrityError)):
             livre_model.create(livre_data)
 
     def test_get_livre_by_id(self, db_with_data):
@@ -594,9 +667,9 @@ class TestEmpruntModel:
 
 ```python
 # tests/integration/test_api.py
-import pytest
-import json
-from flask import url_for
+import pytest  
+import json  
+from flask import url_for  
 
 class TestBooksAPI:
     """Tests d'intégration pour l'API des livres"""
@@ -789,10 +862,14 @@ class TestLoansAPI:
         data = json.loads(response.data)
         assert isinstance(data, list)
         # Vérifier que tous les emprunts sont en retard
-        from datetime import datetime
-        now = datetime.now()
+        # ⚠️ Comparer aware avec aware (sinon TypeError : naïf vs aware)
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
         for loan in data:
-            due_date = datetime.fromisoformat(loan['date_retour_prevue'].replace('Z', '+00:00'))
+            # date_retour_prevue est sérialisée en ISO depuis SQLite (UTC sans tz),
+            # on l'attache à UTC pour la comparaison aware.
+            ts = loan['date_retour_prevue'].replace('Z', '')
+            due_date = datetime.fromisoformat(ts).replace(tzinfo=timezone.utc)
             assert due_date < now
 
 class TestStatsAPI:
@@ -901,9 +978,9 @@ class TestAuthAPI:
 
 ```python
 # tests/integration/test_workflows.py
-import pytest
-import json
-from datetime import datetime, timedelta
+import pytest  
+import json  
+from datetime import datetime, timedelta  
 
 class TestBorrowReturnWorkflow:
     """Tests du workflow complet d'emprunt et retour"""
@@ -1055,7 +1132,7 @@ class TestAdminWorkflow:
         assert response.status_code == 404
 
     def test_admin_overdue_management(self, client, admin_user, db_with_data):
-        """Test de gestion des emprunts en retard par admin"""
+        """Test de gestion des emprunts en retard par admin."""
 
         # 1. Récupérer les emprunts en retard
         response = client.get('/api/loans/overdue')
@@ -1065,26 +1142,29 @@ class TestAdminWorkflow:
 
         if overdue_loans:
             # 2. Vérifier les informations des emprunts en retard
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
             for loan in overdue_loans:
                 assert 'nom_utilisateur' in loan
                 assert 'email' in loan
                 assert 'titre' in loan
                 assert 'date_retour_prevue' in loan
 
-                # Vérifier que la date est bien dépassée
-                due_date = datetime.fromisoformat(loan['date_retour_prevue'])
-                assert due_date < datetime.now()
+                # date_retour_prevue est en UTC depuis CURRENT_TIMESTAMP SQLite.
+                # On l'attache à UTC pour comparer avec datetime.now(utc) (aware).
+                due_date = datetime.fromisoformat(loan['date_retour_prevue']).replace(tzinfo=timezone.utc)
+                assert due_date < now
 ```
 
 ## Tests de performance
 
 ```python
 # tests/performance/test_performance.py
-import pytest
-import time
-import sqlite3
-from faker import Faker
-from app.models import Livre, Utilisateur, Emprunt
+import pytest  
+import time  
+import sqlite3  
+from faker import Faker  
+from app.models import Livre, Utilisateur, Emprunt  
 
 fake = Faker('fr_FR')
 
@@ -1380,11 +1460,11 @@ class TestConcurrency:
 
 ```python
 # tests/data/test_migrations.py
-import pytest
-import sqlite3
-import os
-import tempfile
-from app.database import DatabaseManager
+import pytest  
+import sqlite3  
+import os  
+import tempfile  
+from app.database import DatabaseManager  
 
 class TestDatabaseMigrations:
     """Tests des migrations de schéma de base de données"""
@@ -1645,9 +1725,9 @@ class TestDataValidation:
 
 ```python
 # tests/regression/test_regression.py
-import pytest
-import json
-from datetime import datetime, timedelta
+import pytest  
+import json  
+from datetime import datetime, timedelta  
 
 class TestRegression:
     """Tests de régression pour éviter la réintroduction de bugs"""
@@ -1747,18 +1827,29 @@ class TestRegression:
 
 ```python
 # tests/stress/test_stress.py
-import pytest
-import threading
-import time
-import sqlite3
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from app.models import Livre, Utilisateur, Emprunt
+import pytest  
+import threading  
+import time  
+import sqlite3  
+from concurrent.futures import ThreadPoolExecutor, as_completed  
+from app.models import Livre, Utilisateur, Emprunt  
 
 class TestStress:
-    """Tests de charge et de stress"""
+    """Tests de charge et de stress.
+
+    ⚠️ Préalable critique : ces tests SUPPOSENT que la base est en mode WAL
+       (`PRAGMA journal_mode = WAL`). Sans WAL, les écritures concurrentes
+       sérialisent en mode rollback et provoquent des `database is locked`
+       en cascade — le taux de succès attendu de 95% ne sera PAS atteint.
+
+       S'assurer que `DatabaseManager.init_database()` active WAL :
+         conn.execute("PRAGMA journal_mode = WAL")
+       Et augmenter le busy_timeout sur chaque connexion :
+         conn.execute("PRAGMA busy_timeout = 5000")
+    """
 
     def test_concurrent_book_creation(self, temp_db):
-        """Test de création concurrente de livres"""
+        """Test de création concurrente de livres (nécessite WAL — cf. note de classe)"""
 
         def create_books(start_index, count):
             """Crée des livres dans un thread"""
@@ -1979,13 +2070,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [3.8, 3.9, '3.10', 3.11]
+        # Python 3.8/3.9 sont end-of-life en 2026 ; 3.10 fin de support oct. 2026.
+        # Garder 3.11 (LTS de facto), 3.12 et 3.13.
+        python-version: ['3.11', '3.12', '3.13']
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
 
@@ -2012,9 +2105,9 @@ jobs:
         pytest tests/data/ -v
 
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
-        file: ./coverage.xml
+        files: ./coverage.xml
         fail_ci_if_error: true
 
   stress-test:
@@ -2022,12 +2115,12 @@ jobs:
     needs: test
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.12'
 
     - name: Install dependencies
       run: |
@@ -2040,7 +2133,7 @@ jobs:
         pytest tests/stress/ -v --tb=short
 
     - name: Archive test results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: failure()
       with:
         name: test-results
@@ -2058,11 +2151,11 @@ jobs:
 echo "🧪 Exécution de la suite de tests SQLite"
 
 # Couleurs pour l'affichage
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+RED='\033[0;31m'  
+GREEN='\033[0;32m'  
+YELLOW='\033[1;33m'  
+BLUE='\033[0;34m'  
+NC='\033[0m' # No Color  
 
 # Fonction pour afficher les résultats
 print_result() {
@@ -2082,38 +2175,38 @@ echo -e "${BLUE}📋 Préparation de l'environnement...${NC}"
 # Installer les dépendances de test si nécessaire
 pip install -q pytest pytest-cov pytest-benchmark faker
 
-echo -e "${BLUE}🔧 Tests unitaires...${NC}"
-pytest tests/unit/ -v --cov=app --cov-report=html:reports/coverage_html --cov-report=term
-print_result $? "Tests unitaires"
+echo -e "${BLUE}🔧 Tests unitaires...${NC}"  
+pytest tests/unit/ -v --cov=app --cov-report=html:reports/coverage_html --cov-report=term  
+print_result $? "Tests unitaires"  
 
-echo -e "${BLUE}🔗 Tests d'intégration...${NC}"
-pytest tests/integration/ -v
-print_result $? "Tests d'intégration"
+echo -e "${BLUE}🔗 Tests d'intégration...${NC}"  
+pytest tests/integration/ -v  
+print_result $? "Tests d'intégration"  
 
-echo -e "${BLUE}📊 Tests de performance...${NC}"
-pytest tests/performance/ -v --benchmark-only --benchmark-html=reports/benchmark.html
-print_result $? "Tests de performance"
+echo -e "${BLUE}📊 Tests de performance...${NC}"  
+pytest tests/performance/ -v --benchmark-only --benchmark-html=reports/benchmark.html  
+print_result $? "Tests de performance"  
 
-echo -e "${BLUE}🛡️ Tests d'intégrité des données...${NC}"
-pytest tests/data/ -v
-print_result $? "Tests d'intégrité"
+echo -e "${BLUE}🛡️ Tests d'intégrité des données...${NC}"  
+pytest tests/data/ -v  
+print_result $? "Tests d'intégrité"  
 
-echo -e "${BLUE}🚨 Tests de régression...${NC}"
-pytest tests/regression/ -v
-print_result $? "Tests de régression"
+echo -e "${BLUE}🚨 Tests de régression...${NC}"  
+pytest tests/regression/ -v  
+print_result $? "Tests de régression"  
 
 # Tests de stress (optionnels, plus longs)
-read -p "Exécuter les tests de stress? (y/N): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
+read -p "Exécuter les tests de stress? (y/N): " -n 1 -r  
+echo  
+if [[ $REPLY =~ ^[Yy]$ ]]; then  
     echo -e "${YELLOW}⚡ Tests de stress...${NC}"
     pytest tests/stress/ -v
     print_result $? "Tests de stress"
 fi
 
-echo -e "${GREEN}📈 Rapports générés dans le dossier 'reports/'${NC}"
-echo -e "${BLUE}🌐 Ouvrir reports/coverage_html/index.html pour voir la couverture${NC}"
-echo -e "${BLUE}📊 Ouvrir reports/benchmark.html pour voir les benchmarks${NC}"
+echo -e "${GREEN}📈 Rapports générés dans le dossier 'reports/'${NC}"  
+echo -e "${BLUE}🌐 Ouvrir reports/coverage_html/index.html pour voir la couverture${NC}"  
+echo -e "${BLUE}📊 Ouvrir reports/benchmark.html pour voir les benchmarks${NC}"  
 
 echo -e "${GREEN}✨ Suite de tests terminée!${NC}"
 ```
@@ -2123,15 +2216,15 @@ echo -e "${GREEN}✨ Suite de tests terminée!${NC}"
 ```ini
 # pytest.ini
 [tool:pytest]
-minversion = 6.0
-addopts =
+minversion = 6.0  
+addopts =  
     -ra
     --strict-markers
     --strict-config
     --disable-warnings
     --tb=short
-testpaths = tests
-markers =
+testpaths = tests  
+markers =  
     unit: Tests unitaires rapides
     integration: Tests d'intégration
     performance: Tests de performance
@@ -2145,8 +2238,8 @@ filterwarnings =
 
 # Configuration de couverture
 [coverage:run]
-source = app
-omit =
+source = app  
+omit =  
     */tests/*
     */venv/*
     */migrations/*
@@ -2260,12 +2353,12 @@ ci: clean install lint test-all
 
 ```python
 # scripts/test_dashboard.py
-import json
-import time
-from datetime import datetime, timedelta
-import sqlite3
-import subprocess
-import os
+import json  
+import time  
+from datetime import datetime, timedelta  
+import sqlite3  
+import subprocess  
+import os  
 
 class TestDashboard:
     """Dashboard pour surveiller les tests et métriques"""
@@ -2275,8 +2368,11 @@ class TestDashboard:
         self.init_metrics_db()
 
     def init_metrics_db(self):
-        """Initialise la base de métriques de tests"""
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        """Initialise la base de métriques de tests."""
+        # `os.path.dirname('file.db')` retourne '' → makedirs('') = FileNotFoundError.
+        parent = os.path.dirname(self.db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
 
         with sqlite3.connect(self.db_path) as conn:
             conn.execute('''
@@ -2429,21 +2525,23 @@ class TestDashboard:
             return cursor.lastrowid
 
     def get_git_commit(self):
-        """Récupère le hash du commit actuel"""
+        """Récupère le hash du commit actuel."""
+        # Cibler FileNotFoundError (git absent) et CalledProcessError ;
+        # `bare except:` masquerait aussi KeyboardInterrupt/SystemExit.
         try:
             result = subprocess.run(['git', 'rev-parse', 'HEAD'],
                                   capture_output=True, text=True)
             return result.stdout.strip()[:8] if result.returncode == 0 else None
-        except:
+        except (FileNotFoundError, subprocess.SubprocessError):
             return None
 
     def get_git_branch(self):
-        """Récupère la branche actuelle"""
+        """Récupère la branche actuelle."""
         try:
             result = subprocess.run(['git', 'branch', '--show-current'],
                                   capture_output=True, text=True)
             return result.stdout.strip() if result.returncode == 0 else None
-        except:
+        except (FileNotFoundError, subprocess.SubprocessError):
             return None
 
     def display_summary(self, metrics):
@@ -2479,7 +2577,16 @@ class TestDashboard:
         print("="*60)
 
     def generate_trend_report(self, days=30):
-        """Génère un rapport de tendance"""
+        """Génère un rapport de tendance.
+
+        ⚠️ `days` est concaténé dans la chaîne SQL via `?` (et non format-string
+           ni f-string) pour éviter toute injection si la valeur vient un jour
+           d'un CLI argument. Pour `DATE('now', modifier)`, le modifier doit
+           être une chaîne SQLite — on construit '-N days' avec `||`.
+        """
+        if not isinstance(days, int) or days < 0:
+            raise ValueError(f"days doit être un entier positif, reçu : {days!r}")
+
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute('''
                 SELECT
@@ -2490,10 +2597,10 @@ class TestDashboard:
                     AVG(coverage_percent) as avg_coverage,
                     COUNT(*) as runs_count
                 FROM test_runs
-                WHERE timestamp > DATE('now', '-{} days')
+                WHERE timestamp > DATE('now', '-' || ? || ' days')
                 GROUP BY DATE(timestamp), test_type
                 ORDER BY date DESC, test_type
-            '''.format(days))
+            ''', (days,))
 
             trends = cursor.fetchall()
 
@@ -2654,10 +2761,11 @@ if __name__ == '__main__':
 
 ```python
 # tests/security/test_security.py
-import pytest
-import sqlite3
-import json
-from app.models import Livre, Utilisateur
+import pytest  
+import sqlite3  
+import json  
+import os  # nécessaire pour pytest.mark.skipif(os.name == 'nt', ...) plus bas  
+from app.models import Livre, Utilisateur  
 
 class TestSQLiteSecurity:
     """Tests de sécurité spécifiques à SQLite"""
@@ -2681,13 +2789,18 @@ class TestSQLiteSecurity:
             "1; DELETE FROM livres; --"
         ]
 
+        # ⚠️ Pour rouvrir une 2e connexion sur la même base en mémoire partagée,
+        #    il FAUT passer uri=True (sinon 'file::memory:?cache=shared' est traité
+        #    comme un nom de fichier local et une base distincte est créée).
+        uri_mode = memory_db.startswith('file:')
+
         for malicious_input in malicious_inputs:
             try:
                 # Ces requêtes ne doivent pas causer de dégâts
                 books = livre_model.get_all({'search': malicious_input})
 
-                # Vérifier que la table existe toujours
-                with sqlite3.connect(memory_db) as conn:
+                # Vérifier que la table existe toujours (même base que livre_model)
+                with sqlite3.connect(memory_db, uri=uri_mode) as conn:
                     cursor = conn.execute("SELECT COUNT(*) FROM livres")
                     count = cursor.fetchone()[0]
                     assert count > 0, f"Table livres supprimée par injection: {malicious_input}"
@@ -2697,28 +2810,66 @@ class TestSQLiteSecurity:
                     hacked = cursor.fetchall()
                     assert len(hacked) == 0, f"Données modifiées par injection: {malicious_input}"
 
-            except Exception as e:
-                # Les erreurs sont acceptables, mais pas les modifications de données
+            except sqlite3.Error as e:
+                # Une erreur SQL est acceptable (rejet de l'injection), mais pas
+                # une corruption silencieuse. On capture spécifiquement sqlite3.Error
+                # pour éviter de masquer KeyboardInterrupt / AssertionError.
                 print(f"Injection bloquée (normal): {malicious_input} -> {e}")
 
-    def test_file_path_injection(self):
-        """Test de prévention d'injection de chemin de fichier"""
-        malicious_paths = [
+    def test_file_path_validation(self):
+        """Test de validation des chemins de fichier côté application.
+
+        ⚠️ ATTENTION : `sqlite3.connect(path)` accepte TOUT chemin sans lever
+           d'exception — il crée le fichier s'il n'existe pas. Donc tester
+           que `sqlite3.connect(malicious_path)` lève une exception est FAUX.
+
+        La protection contre les injections de chemin doit donc se faire
+        AU NIVEAU DE L'APPLICATION (validation regex, whitelist de dossiers,
+        os.path.realpath() + vérification que le chemin reste dans une
+        racine autorisée), pas en comptant sur SQLite.
+        """
+        import re
+        from pathlib import Path
+
+        ROOT_AUTORISE = Path('/app/data').resolve()
+
+        def chemin_securise(chemin: str) -> bool:
+            """Valide qu'un chemin reste dans le dossier autorisé.
+
+            ⚠️ `pathlib` interprète les séparateurs selon l'OS — sur Linux,
+               `..\\..\\foo` est un nom de FICHIER unique, donc on doit
+               rejeter explicitement les patterns de traversal Windows pour
+               une protection portable.
+            """
+            try:
+                # 1. Refuser les patterns de traversal Windows (sur Linux, `\` n'est
+                #    pas séparateur → `..\..\foo` passerait `relative_to()`)
+                if '..\\' in chemin or chemin.startswith('..'):
+                    return False
+                # 2. Résoudre et vérifier qu'on reste sous la racine autorisée
+                resolved = (ROOT_AUTORISE / chemin).resolve()
+                resolved.relative_to(ROOT_AUTORISE)
+                # 3. Refuser les caractères shell potentiellement dangereux
+                if re.search(r'[;&|`$()<>\n\\]', chemin):
+                    return False
+                return True
+            except (ValueError, OSError):
+                return False
+
+        # Cas qui DOIVENT être rejetés
+        malicious = [
             "../../../etc/passwd",
             "/etc/shadow",
             "..\\..\\windows\\system32\\config\\sam",
-            ":memory:",  # Pas malicieux mais doit être contrôlé
-            "/dev/null",
             "||whoami",
-            "; rm -rf /"
+            "; rm -rf /",
         ]
+        for path in malicious:
+            assert not chemin_securise(path), f"Chemin malicieux non détecté : {path}"
 
-        for path in malicious_paths:
-            # Ne pas permettre l'ouverture de fichiers arbitraires
-            with pytest.raises((FileNotFoundError, PermissionError, ValueError, sqlite3.OperationalError)):
-                # Tenter d'ouvrir une base avec un chemin malicieux
-                conn = sqlite3.connect(path)
-                conn.close()
+        # Cas qui doivent être acceptés
+        for path in ['bibliotheque.db', 'sub/db.sqlite']:
+            assert chemin_securise(path), f"Chemin valide rejeté : {path}"
 
     def test_privilege_escalation_prevention(self, client, db_with_data):
         """Test de prévention d'escalade de privilèges"""
@@ -2799,8 +2950,14 @@ class TestSQLiteSecurity:
         with client.session_transaction() as sess:
             assert 'user_id' not in sess
 
+    @pytest.mark.skipif(os.name == 'nt', reason="Permissions Unix non applicables sur Windows")
     def test_database_file_permissions(self, temp_db):
-        """Test des permissions du fichier de base de données"""
+        """Test des permissions du fichier de base de données.
+
+        ⚠️ Test Unix-only : les bits POSIX (S_IWOTH, S_IXUSR) ne s'appliquent
+           pas sur Windows. Sur Windows, la sécurité passe par des ACLs NTFS
+           interrogeables via `win32security` (pywin32), pas par stat.S_*.
+        """
         import os
         import stat
 
@@ -2815,7 +2972,7 @@ class TestSQLiteSecurity:
         assert not (file_stat.st_mode & stat.S_IWOTH), \
             f"Fichier DB accessible en écriture par tous: {permissions}"
 
-        # Le fichier ne doit pas être exécutable
+        # Le fichier ne doit pas être exécutable (par le propriétaire)
         assert not (file_stat.st_mode & stat.S_IXUSR), \
             f"Fichier DB exécutable: {permissions}"
 ```
@@ -2872,4 +3029,10 @@ Vous maîtrisez maintenant tous les aspects des tests avec SQLite, du plus simpl
 
 Cette connaissance approfondie des tests SQLite vous permettra de développer des applications fiables et maintenables, avec la confiance nécessaire pour évoluer et s'adapter aux besoins changeants.
 
-⏭️
+---
+
+🎉 **Vous avez terminé la formation SQLite3 !**
+
+- 📋 **Fiche de révision condensée** : [Notes.md](/Notes.md) — l'ensemble des concepts, pièges et syntaxes critiques sur une seule page (cheat-sheet)
+- 📖 **Retour au sommaire** : [SOMMAIRE.md](/SOMMAIRE.md)
+- 🏠 **Page d'accueil** : [README.md](/README.md)

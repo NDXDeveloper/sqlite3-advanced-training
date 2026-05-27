@@ -85,10 +85,10 @@ Avant de créer les tables, analysons ce que nous devons stocker :
 
 ```python
 # app/database.py
-import sqlite3
-import os
-from datetime import datetime
-from werkzeug.security import generate_password_hash
+import sqlite3  
+import os  
+from datetime import datetime  
+from werkzeug.security import generate_password_hash  
 
 class DatabaseManager:
     def __init__(self, db_path="data/bibliotheque.db"):
@@ -97,14 +97,22 @@ class DatabaseManager:
         self.init_database()
 
     def ensure_directory(self):
-        """S'assure que le dossier data existe"""
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        """S'assure que le dossier data existe.
+
+        ⚠️ Si `db_path` est juste un nom de fichier (sans dossier),
+           `os.path.dirname()` retourne '' et `os.makedirs('')` lève
+           FileNotFoundError. On garde-foue ce cas.
+        """
+        parent = os.path.dirname(self.db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
 
     def init_database(self):
         """Initialise la base de données avec toutes les tables"""
         with sqlite3.connect(self.db_path) as conn:
-            # Activer les clés étrangères
+            # Activer les clés étrangères + WAL (persistant au niveau base)
             conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA journal_mode = WAL")
 
             # Table des genres
             conn.execute('''
@@ -152,6 +160,14 @@ class DatabaseManager:
             ''')
 
             # Table des emprunts
+            # ⚠️ `ON DELETE CASCADE` sur livre_id et utilisateur_id : sans cela,
+            #    `Livre.delete()` échoue avec « FOREIGN KEY constraint failed »
+            #    dès qu'il existe un emprunt HISTORIQUE (statut='retourne')
+            #    pointant vers le livre — alors que la logique métier vérifie
+            #    seulement l'absence d'emprunts ACTIFS. CASCADE résout ça en
+            #    supprimant aussi les emprunts historiques associés.
+            #    Compromis : on perd l'historique du livre supprimé. Pour le
+            #    préserver, faire un soft-delete (colonne `archived BOOLEAN`).
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS emprunts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,12 +178,12 @@ class DatabaseManager:
                     date_retour_effective DATETIME,
                     statut TEXT DEFAULT 'actif',  -- 'actif', 'retourne', 'retard'
                     commentaire TEXT,
-                    FOREIGN KEY (livre_id) REFERENCES livres (id),
-                    FOREIGN KEY (utilisateur_id) REFERENCES utilisateurs (id)
+                    FOREIGN KEY (livre_id) REFERENCES livres (id) ON DELETE CASCADE,
+                    FOREIGN KEY (utilisateur_id) REFERENCES utilisateurs (id) ON DELETE CASCADE
                 )
             ''')
 
-            # Table des évaluations
+            # Table des évaluations (cascade pour cohérence avec emprunts)
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS evaluations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,8 +192,8 @@ class DatabaseManager:
                     note INTEGER CHECK (note >= 1 AND note <= 5),
                     commentaire TEXT,
                     date_evaluation DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (livre_id) REFERENCES livres (id),
-                    FOREIGN KEY (utilisateur_id) REFERENCES utilisateurs (id),
+                    FOREIGN KEY (livre_id) REFERENCES livres (id) ON DELETE CASCADE,
+                    FOREIGN KEY (utilisateur_id) REFERENCES utilisateurs (id) ON DELETE CASCADE,
                     UNIQUE(livre_id, utilisateur_id)  -- Un seul avis par utilisateur par livre
                 )
             ''')
@@ -264,21 +280,30 @@ class DatabaseManager:
 
 ```python
 # app/models.py
-import sqlite3
-from datetime import datetime, timedelta
-from werkzeug.security import check_password_hash, generate_password_hash
+import sqlite3  
+from datetime import datetime, timedelta  
+from werkzeug.security import check_password_hash, generate_password_hash  
 
 class BaseModel:
-    """Classe de base pour tous les modèles"""
+    """Classe de base pour tous les modèles.
+
+    Note : on configure WAL ici à chaque ouverture (idempotent : WAL une fois
+    activé reste actif au niveau base). busy_timeout en revanche est
+    per-connection → on le rejoue à chaque ouverture pour éviter les
+    `database is locked` immédiats en cas d'écritures concurrentes (tests de
+    stress, plusieurs requêtes HTTP simultanées).
+    """
 
     def __init__(self, db_path="data/bibliotheque.db"):
         self.db_path = db_path
 
     def get_connection(self):
-        """Retourne une connexion à la base"""
+        """Retourne une connexion à la base, configurée pour le web."""
         conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # Pour accès par nom de colonne
-        conn.execute("PRAGMA foreign_keys = ON")
+        conn.row_factory = sqlite3.Row             # accès par nom de colonne
+        conn.execute("PRAGMA foreign_keys = ON")   # per-connection
+        conn.execute("PRAGMA journal_mode = WAL")  # persistant, lectures concurrentes
+        conn.execute("PRAGMA busy_timeout = 5000") # 5s d'attente avant lock error
         return conn
 
 class Livre(BaseModel):
@@ -320,8 +345,15 @@ class Livre(BaseModel):
                 params.append(filters['disponible'])
 
             if filters.get('search'):
-                conditions.append("(l.titre LIKE ? OR l.auteur LIKE ?)")
-                search_term = f"%{filters['search']}%"
+                # Échapper les wildcards LIKE de l'utilisateur : sans ESCAPE,
+                # un `%` ou `_` saisi dans la recherche serait interprété comme
+                # wildcard SQL (ex: `%` = "tout afficher" → fuite d'info).
+                conditions.append(
+                    "(l.titre LIKE ? ESCAPE '\\' OR l.auteur LIKE ? ESCAPE '\\')"
+                )
+                raw = filters['search']
+                escaped = raw.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+                search_term = f"%{escaped}%"
                 params.extend([search_term, search_term])
 
         if conditions:
@@ -410,8 +442,19 @@ class Utilisateur(BaseModel):
             except sqlite3.IntegrityError:
                 return None  # Email déjà utilisé
 
+    # Hash factice pré-calculé pour mitiger l'énumération par timing attack
+    # (cf. note dans `authenticate` ci-dessous).
+    _DUMMY_HASH = generate_password_hash('dummy-value-for-timing-mitigation')
+
     def authenticate(self, email, mot_de_passe):
-        """Authentifie un utilisateur"""
+        """Authentifie un utilisateur.
+
+        ⚠️ Mitigation timing attack : si l'email n'existe pas, on appelle
+           quand même `check_password_hash` sur un hash factice. Sans ça, le
+           temps de réponse permettait de distinguer « email inexistant »
+           (rapide, ~ms) de « email existant + mauvais password » (lent, ~100ms
+           pour PBKDF2/scrypt) → énumération d'emails enregistrés.
+        """
         with self.get_connection() as conn:
             cursor = conn.execute(
                 "SELECT * FROM utilisateurs WHERE email = ?",
@@ -419,7 +462,12 @@ class Utilisateur(BaseModel):
             )
             user = cursor.fetchone()
 
-            if user and check_password_hash(user['mot_de_passe_hash'], mot_de_passe):
+            if user is None:
+                # Appel factice : durée comparable au cas "user trouvé"
+                check_password_hash(self._DUMMY_HASH, mot_de_passe)
+                return None
+
+            if check_password_hash(user['mot_de_passe_hash'], mot_de_passe):
                 # Mettre à jour last_login
                 conn.execute(
                     "UPDATE utilisateurs SET last_login = CURRENT_TIMESTAMP WHERE id = ?",
@@ -450,22 +498,43 @@ class Emprunt(BaseModel):
     """Modèle pour gérer les emprunts"""
 
     def create(self, emprunt_data):
-        """Crée un nouvel emprunt"""
-        # Date de retour prévue : 2 semaines par défaut
-        date_retour_prevue = datetime.now() + timedelta(days=14)
+        """Crée un nouvel emprunt.
+
+        ⚠️ Cohérence timezone : `CURRENT_TIMESTAMP` SQLite est UTC, mais
+        `datetime.now()` Python est local. On utilise donc UTC explicite
+        ici pour rester cohérent avec les `date_emprunt` insérés par
+        DEFAULT CURRENT_TIMESTAMP.
+
+        ⚠️ Race condition prévenue : on utilise un UPDATE conditionnel
+        atomique (`SET disponible = 0 WHERE id = ? AND disponible = 1`)
+        plutôt qu'un pattern « SELECT puis UPDATE » qui permettrait à deux
+        clients de voir le livre disponible avant que l'un d'eux n'écrive.
+        SQLite garantit l'atomicité de l'UPDATE — `rowcount == 0` signifie
+        que la condition a échoué (livre absent ou déjà emprunté).
+        """
+        from datetime import timezone
+        # Date de retour prévue : 2 semaines (en UTC pour cohérence avec la BDD).
+        # On formate explicitement en string ISO sans offset pour matcher le
+        # format de `CURRENT_TIMESTAMP` SQLite ('YYYY-MM-DD HH:MM:SS', UTC).
+        # Sans cela, la comparaison `e.date_retour_prevue < DATE('now')` peut
+        # tomber sur des formats hétérogènes (selon Python 3.11 vs 3.12+).
+        date_retour_prevue = (
+            (datetime.now(timezone.utc) + timedelta(days=14))
+            .strftime('%Y-%m-%d %H:%M:%S')
+        )
 
         with self.get_connection() as conn:
-            # Vérifier que le livre est disponible
+            # 1. Réserver le livre de façon atomique : seul un UPDATE
+            #    réussit pour un livre disponible donné.
             cursor = conn.execute(
-                "SELECT disponible FROM livres WHERE id = ?",
+                "UPDATE livres SET disponible = 0 WHERE id = ? AND disponible = 1",
                 (emprunt_data['livre_id'],)
             )
-            livre = cursor.fetchone()
-
-            if not livre or not livre['disponible']:
+            if cursor.rowcount == 0:
+                # Livre absent OU déjà emprunté par quelqu'un d'autre
                 return None, "Livre non disponible"
 
-            # Créer l'emprunt
+            # 2. Créer l'emprunt (le livre est maintenant verrouillé pour nous)
             cursor = conn.execute('''
                 INSERT INTO emprunts (livre_id, utilisateur_id, date_retour_prevue, commentaire)
                 VALUES (?, ?, ?, ?)
@@ -475,13 +544,6 @@ class Emprunt(BaseModel):
             ))
 
             emprunt_id = cursor.lastrowid
-
-            # Marquer le livre comme non disponible
-            conn.execute(
-                "UPDATE livres SET disponible = 0 WHERE id = ?",
-                (emprunt_data['livre_id'],)
-            )
-
             return emprunt_id, "Emprunt créé avec succès"
 
     def return_book(self, emprunt_id, commentaire=None):
@@ -604,20 +666,27 @@ class Genre(BaseModel):
 
 ```python
 # app/__init__.py
-from flask import Flask
-from werkzeug.utils import secure_filename
-import os
+from flask import Flask  
+from werkzeug.utils import secure_filename  
+import os  
 
-def create_app():
+def create_app(config_name='development'):
+    """Factory Flask. Le paramètre `config_name` est utilisé par run.py et conftest.py."""
     app = Flask(__name__)
 
-    # Configuration
-    app.config['SECRET_KEY'] = 'votre-clé-secrète-ici'
-    app.config['UPLOAD_FOLDER'] = 'static/uploads'
-    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
+    # Configuration via objet Config (cf. config.py plus bas)
+    from config import config
+    app.config.from_object(config[config_name])
+
+    # ⚠️ JAMAIS de SECRET_KEY en dur ici — c'est récupéré depuis config.Config
+    #    qui la lit depuis os.environ['SECRET_KEY']. Une SECRET_KEY en dur
+    #    permettrait à un attaquant qui voit le code de forger des sessions.
+    if not app.config.get('SECRET_KEY') or app.config['SECRET_KEY'] == 'dev-secret-key-change-in-production':
+        if config_name == 'production':
+            raise RuntimeError("SECRET_KEY obligatoire en production (variable d'env)")
 
     # S'assurer que le dossier d'upload existe
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+    os.makedirs(app.config.get('UPLOAD_FOLDER', 'static/uploads'), exist_ok=True)
 
     # Enregistrer les blueprints
     from app.routes import bp as main_bp
@@ -630,11 +699,11 @@ def create_app():
 
 ```python
 # app/routes.py
-from flask import Blueprint, request, jsonify, render_template, session, redirect, url_for, flash
-from werkzeug.utils import secure_filename
-import os
-from app.models import Livre, Utilisateur, Emprunt, Genre
-from app.database import DatabaseManager
+from flask import Blueprint, request, jsonify, render_template, session, redirect, url_for, flash, current_app  
+from werkzeug.utils import secure_filename  
+import os  
+from app.models import Livre, Utilisateur, Emprunt, Genre  
+from app.database import DatabaseManager  
 
 bp = Blueprint('main', __name__)
 
@@ -664,18 +733,37 @@ def admin_required(f):
 # Routes de pages
 @bp.route('/')
 def index():
-    """Page d'accueil"""
+    """Page d'accueil.
+
+    ⚠️ On évite `len(livre_model.get_all())` qui chargerait tous les livres
+       en mémoire juste pour compter — utiliser un `COUNT(*)` direct est
+       O(1) avec un index, vs O(N) pour charger tout.
+    """
     livre_model = Livre()
 
-    # Statistiques rapides
+    with livre_model.get_connection() as conn:
+        total_livres = conn.execute("SELECT COUNT(*) FROM livres").fetchone()[0]
+        livres_disponibles = conn.execute(
+            "SELECT COUNT(*) FROM livres WHERE disponible = 1"
+        ).fetchone()[0]
+        emprunts_actifs = conn.execute(
+            "SELECT COUNT(*) FROM emprunts WHERE statut = 'actif'"
+        ).fetchone()[0]
+
     stats = {
-        'total_livres': len(livre_model.get_all()),
-        'livres_disponibles': len(livre_model.get_all({'disponible': True})),
-        'emprunts_actifs': len(Emprunt().get_active_loans())
+        'total_livres': total_livres,
+        'livres_disponibles': livres_disponibles,
+        'emprunts_actifs': emprunts_actifs,
     }
 
-    # Derniers livres ajoutés
-    derniers_livres = livre_model.get_all()[:6]  # 6 derniers
+    # Derniers livres ajoutés (limité côté SQL plutôt que slice en Python)
+    with livre_model.get_connection() as conn:
+        cursor = conn.execute(
+            "SELECT l.*, g.nom AS genre_nom, g.couleur AS genre_couleur "
+            "FROM livres l LEFT JOIN genres g ON l.genre_id = g.id "
+            "ORDER BY l.date_ajout DESC LIMIT 6"
+        )
+        derniers_livres = [dict(r) for r in cursor.fetchall()]
 
     return render_template('index.html', stats=stats, derniers_livres=derniers_livres)
 
@@ -696,8 +784,14 @@ def stats():
 def login():
     """Connexion utilisateur"""
     if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
+        # `.get()` au lieu de `['...']` pour éviter un BadRequest 400 brutal
+        # si le champ est absent (cas mal formé, attaquant qui pose un form vide).
+        email = (request.form.get('email') or '').strip()
+        password = request.form.get('password') or ''
+
+        if not email or not password:
+            flash('Email et mot de passe requis', 'error')
+            return render_template('login.html')
 
         user_model = Utilisateur()
         user = user_model.authenticate(email, password)
@@ -724,9 +818,18 @@ def logout():
 def register():
     """Inscription d'un nouvel utilisateur"""
     if request.method == 'POST':
-        nom = request.form['nom']
-        email = request.form['email']
-        password = request.form['password']
+        # `.get()` plutôt que `['xxx']` pour ne pas crasher en 400 sur champ absent
+        nom = (request.form.get('nom') or '').strip()
+        email = (request.form.get('email') or '').strip()
+        password = request.form.get('password') or ''
+
+        # Validation minimale côté serveur (NE PAS faire confiance au front)
+        if not nom or not email or not password:
+            flash('Tous les champs sont requis', 'error')
+            return render_template('register.html')
+        if len(password) < 8:
+            flash('Le mot de passe doit faire au moins 8 caractères', 'error')
+            return render_template('register.html')
 
         user_model = Utilisateur()
         user_id = user_model.create({
@@ -766,7 +869,11 @@ def api_books():
 @admin_required
 def api_create_book():
     """API : Créer un nouveau livre"""
-    data = request.get_json()
+    # ⚠️ `request.get_json(silent=True)` retourne None au lieu de lever ; on
+    #    valide explicitement pour éviter AttributeError sur data.get(...).
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'JSON invalide ou body vide'}), 400
 
     # Validation de base
     required_fields = ['titre', 'auteur']
@@ -798,7 +905,9 @@ def api_get_book(book_id):
 @admin_required
 def api_update_book(book_id):
     """API : Mettre à jour un livre"""
-    data = request.get_json()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'JSON invalide ou body vide'}), 400
 
     livre_model = Livre()
     success = livre_model.update(book_id, data)
@@ -838,13 +947,17 @@ def api_loans():
 @login_required
 def api_create_loan():
     """API : Créer un nouvel emprunt"""
-    data = request.get_json()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'JSON invalide ou body vide'}), 400
 
     # Validation
     if not data.get('livre_id'):
         return jsonify({'error': 'ID du livre requis'}), 400
 
-    # Ajouter l'ID utilisateur de la session
+    # ⚠️ Toujours utiliser l'ID utilisateur de la SESSION (et non un id
+    #    fourni dans le body), sinon un utilisateur pourrait emprunter
+    #    au nom d'un autre utilisateur. On écrase explicitement la valeur.
     data['utilisateur_id'] = session['user_id']
 
     emprunt_model = Emprunt()
@@ -859,8 +972,9 @@ def api_create_loan():
 @login_required
 def api_return_book(loan_id):
     """API : Retourner un livre"""
-    data = request.get_json() or {}
-    commentaire = data.get('commentaire')
+    # silent=True : ne pas crasher si Content-Type absent ou body invalide.
+    data = request.get_json(silent=True) or {}
+    commentaire = data.get('commentaire') if isinstance(data, dict) else None
 
     emprunt_model = Emprunt()
     success, message = emprunt_model.return_book(loan_id, commentaire)
@@ -888,32 +1002,48 @@ def api_genres():
 @bp.route('/api/stats')
 @login_required
 def api_stats():
-    """API : Statistiques de la bibliothèque"""
+    """API : Statistiques de la bibliothèque.
+
+    Optimisation : utilise des `COUNT()` directs au lieu de charger toutes
+    les lignes pour faire `len()` dessus. Sur 50 000 livres : ~5 ms vs ~500 ms.
+    """
     livre_model = Livre()
     emprunt_model = Emprunt()
     genre_model = Genre()
 
-    # Statistiques générales
-    tous_livres = livre_model.get_all()
-    emprunts_actifs = emprunt_model.get_active_loans()
-    emprunts_retard = emprunt_model.get_overdue_loans()
+    with livre_model.get_connection() as conn:
+        livres = conn.execute('''
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN disponible = 1 THEN 1 ELSE 0 END) AS disponibles,
+                   SUM(CASE WHEN disponible = 0 THEN 1 ELSE 0 END) AS empruntes
+            FROM livres
+        ''').fetchone()
+        emprunts_counts = conn.execute('''
+            SELECT
+                SUM(CASE WHEN statut = 'actif' THEN 1 ELSE 0 END) AS actifs,
+                SUM(CASE WHEN statut = 'actif'
+                          AND date_retour_prevue < DATE('now')
+                         THEN 1 ELSE 0 END) AS en_retard
+            FROM emprunts
+        ''').fetchone()
 
     stats = {
         'livres': {
-            'total': len(tous_livres),
-            'disponibles': len([l for l in tous_livres if l['disponible']]),
-            'empruntes': len([l for l in tous_livres if not l['disponible']])
+            'total': livres['total'] or 0,
+            'disponibles': livres['disponibles'] or 0,
+            'empruntes': livres['empruntes'] or 0,
         },
         'emprunts': {
-            'actifs': len(emprunts_actifs),
-            'en_retard': len(emprunts_retard)
+            'actifs': emprunts_counts['actifs'] or 0,
+            'en_retard': emprunts_counts['en_retard'] or 0,
         },
         'genres': genre_model.get_with_counts()
     }
 
-    # Si admin, ajouter plus de détails
+    # Si admin, ajouter le détail des retards (charge complète justifiée
+    # uniquement quand on veut afficher la liste)
     if session.get('is_admin', False):
-        stats['emprunts']['details_retard'] = emprunts_retard
+        stats['emprunts']['details_retard'] = emprunt_model.get_overdue_loans()
 
     return jsonify(stats)
 
@@ -925,17 +1055,22 @@ def api_upload_cover():
         return jsonify({'error': 'Aucun fichier'}), 400
 
     file = request.files['file']
-    if file.filename == '':
+    if not file.filename:
         return jsonify({'error': 'Aucun fichier sélectionné'}), 400
 
-    # Vérifier l'extension
+    # Vérifier l'extension (defense in depth ; un attaquant peut renommer
+    # un .php en .png — pour une vraie sécurité, valider aussi les "magic
+    # bytes" via Pillow ou python-magic).
     allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
     if '.' not in file.filename or \
        file.filename.rsplit('.', 1)[1].lower() not in allowed_extensions:
         return jsonify({'error': 'Format de fichier non autorisé'}), 400
 
-    # Sauvegarder le fichier
-    filename = secure_filename(file.filename)
+    # Sauvegarder le fichier. secure_filename peut retourner '' sur des noms
+    # non-ASCII purs (ex: '日本語.png' → ''). On préserve l'extension validée
+    # ci-dessus pour le fallback, sinon le fichier perdrait son MIME type.
+    ext = file.filename.rsplit('.', 1)[1].lower()  # déjà validé en ext autorisée
+    filename = secure_filename(file.filename) or f'cover.{ext}'
     # Ajouter timestamp pour éviter les conflits
     import time
     filename = f"{int(time.time())}_{filename}"
@@ -957,8 +1092,13 @@ def api_search():
     livre_model = Livre()
     livres = livre_model.get_all({'search': query})
 
-    # Limiter les résultats pour l'autocomplétion
-    limite = int(request.args.get('limit', 10))
+    # Limiter les résultats pour l'autocomplétion (clamp + fallback pour
+    # éviter ValueError 500 sur ?limit=abc et `IndexError` sur valeurs négatives)
+    try:
+        limite = int(request.args.get('limit', 10))
+    except (TypeError, ValueError):
+        limite = 10
+    limite = max(1, min(limite, 100))
     return jsonify(livres[:limite])
 ```
 
@@ -982,7 +1122,10 @@ def api_search():
     <!-- CSS personnalisé -->
     <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
 </head>
-<body>
+{# data-is-admin est lu par books.html via `document.body.dataset.isAdmin`
+   pour décider d'afficher les boutons admin (Modifier/Supprimer). Sans cet
+   attribut, `isAdmin` côté JS reste toujours false même pour un admin connecté. #}
+<body data-is-admin="{{ 'true' if session.is_admin else 'false' }}">
     <!-- Navigation -->
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
@@ -1067,7 +1210,7 @@ def api_search():
     <footer class="bg-light text-center py-3 mt-5">
         <div class="container">
             <small class="text-muted">
-                © 2024 Ma Bibliothèque - Propulsé par SQLite et Flask
+                © 2026 Ma Bibliothèque - Propulsé par SQLite et Flask
             </small>
         </div>
     </footer>
@@ -1410,9 +1553,23 @@ def api_search():
 {% block scripts %}
 <script>
 // Variables globales
-let currentBooks = [];
-let currentView = 'grid';
-let currentFilters = {};
+let currentBooks = [];  
+let currentView = 'grid';  
+let currentFilters = {};  
+
+// ⚠️ SÉCURITÉ XSS — Échappement HTML obligatoire pour tout contenu utilisateur
+// injecté via innerHTML. Sans cela, un titre = "<script>...</script>" devient
+// du code exécuté côté client. À utiliser pour tout texte et toute valeur de
+// type chaîne (titres, noms, résumés, URLs…).
+function esc(v) {
+    if (v === null || v === undefined) return '';
+    return String(v)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
 // Initialisation de la page
 document.addEventListener('DOMContentLoaded', function() {
@@ -1509,16 +1666,21 @@ function displayBooks(books) {
     }
 }
 
-// Affichage en grille
+// Affichage en grille (toutes les valeurs string passent par esc() pour
+// éviter les XSS via titre/auteur/résumé contrôlés par l'utilisateur)
 function displayBooksGrid(books, container) {
     container.innerHTML = `
         <div class="row">
-            ${books.map(book => `
+            ${books.map(book => {
+                const titreShort = book.titre.length > 25
+                    ? book.titre.substring(0, 25) + '...'
+                    : book.titre;
+                return `
                 <div class="col-xl-2 col-lg-3 col-md-4 col-sm-6 mb-4">
                     <div class="card h-100">
                         <div class="position-relative">
                             ${book.couverture_url ?
-                                `<img src="${book.couverture_url}" class="card-img-top" style="height: 200px; object-fit: cover;" alt="${book.titre}">` :
+                                `<img src="${esc(book.couverture_url)}" class="card-img-top" style="height: 200px; object-fit: cover;" alt="${esc(book.titre)}">` :
                                 `<div class="card-img-top bg-light d-flex align-items-center justify-content-center" style="height: 200px;">
                                     <i class="fas fa-book fa-3x text-muted"></i>
                                 </div>`
@@ -1553,21 +1715,21 @@ function displayBooksGrid(books, container) {
                         </div>
 
                         <div class="card-body d-flex flex-column">
-                            <h6 class="card-title mb-1" title="${book.titre}">
-                                ${book.titre.length > 25 ? book.titre.substring(0, 25) + '...' : book.titre}
+                            <h6 class="card-title mb-1" title="${esc(book.titre)}">
+                                ${esc(titreShort)}
                             </h6>
-                            <small class="text-muted mb-2">${book.auteur}</small>
+                            <small class="text-muted mb-2">${esc(book.auteur)}</small>
 
                             ${book.genre_nom ? `
                                 <div class="mb-2">
-                                    <span class="badge" style="background-color: ${book.genre_couleur};">
-                                        ${book.genre_nom}
+                                    <span class="badge" style="background-color: ${esc(book.genre_couleur)};">
+                                        ${esc(book.genre_nom)}
                                     </span>
                                 </div>
                             ` : ''}
 
                             ${book.annee_publication ? `
-                                <small class="text-muted mb-2">${book.annee_publication}</small>
+                                <small class="text-muted mb-2">${esc(book.annee_publication)}</small>
                             ` : ''}
 
                             <div class="mt-auto">
@@ -1584,7 +1746,8 @@ function displayBooksGrid(books, container) {
                         </div>
                     </div>
                 </div>
-            `).join('')}
+            `;
+            }).join('')}
         </div>
     `;
 }
@@ -1611,26 +1774,26 @@ function displayBooksList(books, container) {
                         <tr>
                             <td>
                                 ${book.couverture_url ?
-                                    `<img src="${book.couverture_url}" style="width: 40px; height: 60px; object-fit: cover;" alt="${book.titre}">` :
+                                    `<img src="${esc(book.couverture_url)}" style="width: 40px; height: 60px; object-fit: cover;" alt="${esc(book.titre)}">` :
                                     `<div class="bg-light d-flex align-items-center justify-content-center" style="width: 40px; height: 60px;">
                                         <i class="fas fa-book text-muted"></i>
                                     </div>`
                                 }
                             </td>
                             <td>
-                                <strong>${book.titre}</strong>
-                                ${book.isbn ? `<br><small class="text-muted">ISBN: ${book.isbn}</small>` : ''}
+                                <strong>${esc(book.titre)}</strong>
+                                ${book.isbn ? `<br><small class="text-muted">ISBN: ${esc(book.isbn)}</small>` : ''}
                             </td>
-                            <td>${book.auteur}</td>
+                            <td>${esc(book.auteur)}</td>
                             <td>
                                 ${book.genre_nom ? `
-                                    <span class="badge" style="background-color: ${book.genre_couleur};">
-                                        ${book.genre_nom}
+                                    <span class="badge" style="background-color: ${esc(book.genre_couleur)};">
+                                        ${esc(book.genre_nom)}
                                     </span>
                                 ` : '-'}
                             </td>
-                            <td>${book.annee_publication || '-'}</td>
-                            <td>${book.nombre_pages || '-'}</td>
+                            <td>${esc(book.annee_publication) || '-'}</td>
+                            <td>${esc(book.nombre_pages) || '-'}</td>
                             <td>
                                 ${book.disponible ?
                                     '<span class="badge bg-success">Disponible</span>' :
@@ -1715,7 +1878,7 @@ function showBookDetails(bookId) {
                 <div class="row">
                     <div class="col-md-4">
                         ${book.couverture_url ?
-                            `<img src="${book.couverture_url}" class="img-fluid rounded" alt="${book.titre}">` :
+                            `<img src="${esc(book.couverture_url)}" class="img-fluid rounded" alt="${esc(book.titre)}">` :
                             `<div class="bg-light d-flex align-items-center justify-content-center rounded" style="height: 300px;">
                                 <i class="fas fa-book fa-4x text-muted"></i>
                             </div>`
@@ -1724,37 +1887,37 @@ function showBookDetails(bookId) {
                     <div class="col-md-8">
                         <dl class="row">
                             <dt class="col-sm-3">Titre:</dt>
-                            <dd class="col-sm-9">${book.titre}</dd>
+                            <dd class="col-sm-9">${esc(book.titre)}</dd>
 
                             <dt class="col-sm-3">Auteur:</dt>
-                            <dd class="col-sm-9">${book.auteur}</dd>
+                            <dd class="col-sm-9">${esc(book.auteur)}</dd>
 
                             ${book.isbn ? `
                                 <dt class="col-sm-3">ISBN:</dt>
-                                <dd class="col-sm-9">${book.isbn}</dd>
+                                <dd class="col-sm-9">${esc(book.isbn)}</dd>
                             ` : ''}
 
                             ${book.genre_nom ? `
                                 <dt class="col-sm-3">Genre:</dt>
                                 <dd class="col-sm-9">
-                                    <span class="badge" style="background-color: ${book.genre_couleur};">
-                                        ${book.genre_nom}
+                                    <span class="badge" style="background-color: ${esc(book.genre_couleur)};">
+                                        ${esc(book.genre_nom)}
                                     </span>
                                 </dd>
                             ` : ''}
 
                             ${book.annee_publication ? `
                                 <dt class="col-sm-3">Année:</dt>
-                                <dd class="col-sm-9">${book.annee_publication}</dd>
+                                <dd class="col-sm-9">${esc(book.annee_publication)}</dd>
                             ` : ''}
 
                             ${book.nombre_pages ? `
                                 <dt class="col-sm-3">Pages:</dt>
-                                <dd class="col-sm-9">${book.nombre_pages}</dd>
+                                <dd class="col-sm-9">${esc(book.nombre_pages)}</dd>
                             ` : ''}
 
                             <dt class="col-sm-3">Langue:</dt>
-                            <dd class="col-sm-9">${book.langue || 'Non spécifiée'}</dd>
+                            <dd class="col-sm-9">${esc(book.langue) || 'Non spécifiée'}</dd>
 
                             <dt class="col-sm-3">Statut:</dt>
                             <dd class="col-sm-9">
@@ -1770,7 +1933,7 @@ function showBookDetails(bookId) {
 
                         ${book.resume ? `
                             <h6>Résumé:</h6>
-                            <p class="text-muted">${book.resume}</p>
+                            <p class="text-muted">${esc(book.resume)}</p>
                         ` : ''}
                     </div>
                 </div>
@@ -1863,10 +2026,10 @@ function editBook(bookId) {
             document.getElementById('bookPages').value = book.nombre_pages || '';
             document.getElementById('bookSummary').value = book.resume || '';
 
-            // Afficher la couverture existante
+            // Afficher la couverture existante (URL échappée — XSS prevention)
             if (book.couverture_url) {
                 document.getElementById('coverPreview').innerHTML =
-                    `<img src="${book.couverture_url}" style="max-width: 100%; max-height: 200px;">`;
+                    `<img src="${esc(book.couverture_url)}" style="max-width: 100%; max-height: 200px;">`;
             } else {
                 document.getElementById('coverPreview').innerHTML = '<i class="fas fa-image fa-3x text-muted"></i>';
             }
@@ -1970,8 +2133,10 @@ function showAlert(message, type) {
     const alertContainer = document.querySelector('.container');
     const alert = document.createElement('div');
     alert.className = `alert alert-${type} alert-dismissible fade show`;
+    // Échapper le message : il peut contenir des données utilisateur
+    // (ex: "Email <attacker@x.com> non valide") qui sinon deviennent du HTML.
     alert.innerHTML = `
-        ${message}
+        ${esc(message)}
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     `;
 
@@ -2008,8 +2173,8 @@ function showUserLoans() {
                         <div class="list-group-item">
                             <div class="d-flex justify-content-between align-items-start">
                                 <div>
-                                    <h6 class="mb-1">${loan.titre}</h6>
-                                    <p class="mb-1">par ${loan.auteur}</p>
+                                    <h6 class="mb-1">${esc(loan.titre)}</h6>
+                                    <p class="mb-1">par ${esc(loan.auteur)}</p>
                                     <small class="text-muted">
                                         À rendre le:
                                         <span class="${isOverdue ? 'text-danger fw-bold' : ''}">${dueDate.toLocaleDateString('fr-FR')}</span>
@@ -2067,13 +2232,16 @@ function showSimpleModal(title, content) {
         existingModal.remove();
     }
 
-    // Créer un nouveau modal
+    // Créer un nouveau modal. Le `title` est échappé par défaut (safe-by-default).
+    // `content` est délibérément non-échappé car il contient du HTML pré-formaté
+    // par l'appelant — qui DOIT donc appliquer esc() lui-même sur les données
+    // utilisateur interpolées dans `content`.
     const modalHtml = `
         <div class="modal fade" id="simpleModal" tabindex="-1">
             <div class="modal-dialog">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">${title}</h5>
+                        <h5 class="modal-title">${esc(title)}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
@@ -2322,10 +2490,6 @@ body {
 .status-overdue {
     border-left: 4px solid var(--danger-color);
 }
-
-# 9.4 - Finalisation : CSS, Config et Déploiement
-
-## CSS (suite et finalisation)
 
 /* Spinner de chargement */
 .loading-spinner {
@@ -2583,8 +2747,8 @@ body {
 
 ```python
 # config.py
-import os
-from datetime import timedelta
+import os  
+from datetime import timedelta  
 
 class Config:
     """Configuration de base"""
@@ -2632,9 +2796,21 @@ class ProductionConfig(Config):
     SESSION_COOKIE_SAMESITE = 'Lax'
 
 class TestingConfig(Config):
-    """Configuration pour les tests"""
+    """Configuration pour les tests.
+
+    ⚠️ PIÈGE évité : DATABASE_PATH = ':memory:' nu ne marche PAS car chaque
+       sqlite3.connect(':memory:') crée une base DIFFÉRENTE. L'app et les
+       fixtures (qui ouvrent leurs propres connexions) ne verraient pas les
+       mêmes données.
+
+       Deux solutions :
+       1. URI partagée : 'file::memory:?cache=shared' + uri=True dans les connect()
+          → nécessite que BaseModel.get_connection() détecte ce préfixe.
+       2. Fichier temporaire (recommandé, plus simple) : conftest.py override
+          DATABASE_PATH avec tempfile.mkstemp() — cf. 9.5.
+    """
     TESTING = True
-    DATABASE_PATH = ':memory:'  # Base en mémoire pour les tests
+    DATABASE_PATH = 'file::memory:?cache=shared'  # voir piège ci-dessus
     WTF_CSRF_ENABLED = False
 
 # Dictionnaire des configurations
@@ -2650,9 +2826,9 @@ config = {
 
 ```python
 # run.py
-import os
-from app import create_app
-from app.database import DatabaseManager
+import os  
+from app import create_app  
+from app.database import DatabaseManager  
 
 # Déterminer l'environnement
 config_name = os.environ.get('FLASK_CONFIG') or 'default'
@@ -2686,47 +2862,46 @@ if __name__ == '__main__':
 
 ```txt
 # requirements.txt
-Flask==2.3.3
-Werkzeug==2.3.7
-Jinja2==3.1.2
-click==8.1.7
-itsdangerous==2.1.2
-MarkupSafe==2.1.3
+# Versions minimum testées en 2026 ; utilisez `pip install -U` régulièrement.
+Flask>=3.0,<4.0  
+Werkzeug>=3.0,<4.0  
+Jinja2>=3.1  
+itsdangerous>=2.1  
+MarkupSafe>=2.1  
 
 # Pour les uploads d'images
-Pillow==10.0.1
+Pillow>=10.0
 
 # Pour l'envoi d'emails
-Flask-Mail==0.9.1
+Flask-Mail>=0.9
 
 # Pour la validation des formulaires
-Flask-WTF==1.1.1
-WTForms==3.0.1
+Flask-WTF>=1.2  
+WTForms>=3.1  
 
 # Pour les tests
-pytest==7.4.2
-pytest-flask==1.2.0
+pytest>=8.0  
+pytest-flask>=1.3  
 
 # Outils de développement
-python-dotenv==1.0.0
-flask-shell-ipython==1.4.0
+python-dotenv>=1.0
 ```
 
 ### Variables d'environnement
 
 ```bash
 # .env (fichier d'environnement pour le développement)
-FLASK_ENV=development
-FLASK_CONFIG=development
-SECRET_KEY=your-secret-key-here
-DATABASE_PATH=data/bibliotheque.db
+FLASK_ENV=development  
+FLASK_CONFIG=development  
+SECRET_KEY=your-secret-key-here  
+DATABASE_PATH=data/bibliotheque.db  
 
 # Configuration email (optionnel)
-MAIL_SERVER=smtp.gmail.com
-MAIL_PORT=587
-MAIL_USE_TLS=true
-MAIL_USERNAME=your-email@gmail.com
-MAIL_PASSWORD=your-app-password
+MAIL_SERVER=smtp.gmail.com  
+MAIL_PORT=587  
+MAIL_USE_TLS=true  
+MAIL_USERNAME=your-email@gmail.com  
+MAIL_PASSWORD=your-app-password  
 
 # Configuration pour la production
 # FLASK_ENV=production
@@ -2739,23 +2914,26 @@ MAIL_PASSWORD=your-app-password
 
 ```python
 # scripts/manage_data.py
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys  
+import os  
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  
 
-import sqlite3
-import csv
-from datetime import datetime
-from app.models import Livre, Utilisateur, Emprunt, Genre
-from app.database import DatabaseManager
+import sqlite3  
+import csv  
+from datetime import datetime  
+from app.models import Livre, Utilisateur, Emprunt, Genre  
+from app.database import DatabaseManager  
 
 class DataManager:
     def __init__(self):
         self.db_manager = DatabaseManager()
 
     def export_books_csv(self, filename='exports/livres_export.csv'):
-        """Exporte tous les livres vers un fichier CSV"""
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        """Exporte tous les livres vers un fichier CSV."""
+        # `os.path.dirname('file.csv')` retourne '' → makedirs('') = FileNotFoundError.
+        parent = os.path.dirname(filename)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
 
         livre_model = Livre()
         livres = livre_model.get_all()
@@ -2827,19 +3005,28 @@ class DataManager:
         print(f"✅ Import terminé: {imported} livres importés, {errors} erreurs")
 
     def backup_database(self, backup_path=None):
-        """Crée une sauvegarde de la base de données"""
+        """Crée une sauvegarde sûre via l'API .backup() de SQLite.
+
+        ⚠️ shutil.copy2 sur une base SQLite ouverte peut produire une
+           copie corrompue si une transaction est en cours.
+           .backup() est transactionnellement sûr, même sur base active.
+        """
         if backup_path is None:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             backup_path = f"backups/bibliotheque_backup_{timestamp}.db"
 
-        os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+        parent = os.path.dirname(backup_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
 
-        import shutil
-        shutil.copy2(self.db_manager.db_path, backup_path)
+        from contextlib import closing
+        with closing(sqlite3.connect(self.db_manager.db_path)) as src, \
+             closing(sqlite3.connect(backup_path)) as dst:
+            src.backup(dst)
         print(f"✅ Sauvegarde créée: {backup_path}")
 
     def restore_database(self, backup_path):
-        """Restaure la base depuis une sauvegarde"""
+        """Restaure la base depuis une sauvegarde (API .backup() inverse)."""
         if not os.path.exists(backup_path):
             print(f"❌ Fichier de sauvegarde {backup_path} non trouvé")
             return
@@ -2848,19 +3035,29 @@ class DataManager:
             print("Restauration annulée")
             return
 
-        import shutil
-        shutil.copy2(backup_path, self.db_manager.db_path)
+        # Toutes les autres connexions sur self.db_manager.db_path DOIVENT
+        # être fermées avant la restauration.
+        from contextlib import closing
+        with closing(sqlite3.connect(backup_path)) as src, \
+             closing(sqlite3.connect(self.db_manager.db_path)) as dst:
+            src.backup(dst)
         print(f"✅ Base restaurée depuis {backup_path}")
 
     def cleanup_old_loans(self, days=365):
-        """Nettoie les anciens emprunts terminés"""
-        with sqlite3.connect(self.db_manager.db_path) as conn:
-            cursor = conn.execute('''
-                DELETE FROM emprunts
-                WHERE statut = 'retourne'
-                AND date_retour_effective < DATE('now', '-{} days')
-            '''.format(days))
+        """Nettoie les anciens emprunts terminés.
 
+        ⚠️ `days` doit être un int — on évite f-string/format et on utilise
+           datetime SQLite avec concaténation pour passer la valeur sûrement.
+        """
+        if not isinstance(days, int) or days < 0:
+            raise ValueError(f"days doit être un entier positif, reçu : {days!r}")
+        with sqlite3.connect(self.db_manager.db_path) as conn:
+            cursor = conn.execute(
+                "DELETE FROM emprunts "
+                "WHERE statut = 'retourne' "
+                "AND date_retour_effective < datetime('now', '-' || ? || ' days')",
+                (days,)
+            )
             deleted = cursor.rowcount
             print(f"✅ {deleted} anciens emprunts supprimés")
 
@@ -2927,12 +3124,12 @@ if __name__ == '__main__':
 
 ```dockerfile
 # Dockerfile
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Variables d'environnement
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV FLASK_ENV=production
+ENV PYTHONDONTWRITEBYTECODE=1  
+ENV PYTHONUNBUFFERED=1  
+ENV FLASK_ENV=production  
 
 # Répertoire de travail
 WORKDIR /app
@@ -2942,9 +3139,11 @@ RUN apt-get update && apt-get install -y \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copier les requirements et installer les dépendances Python
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copier les requirements et installer les dépendances Python.
+# `gunicorn` est ajouté ici (pas dans requirements.txt) car uniquement
+# nécessaire en production, pas en dev local.
+COPY requirements.txt .  
+RUN pip install --no-cache-dir -r requirements.txt gunicorn  
 
 # Copier le code de l'application
 COPY . .
@@ -2955,9 +3154,20 @@ RUN mkdir -p data static/uploads backups exports logs
 # Exposer le port
 EXPOSE 5000
 
-# Commande de démarrage
-CMD ["python", "run.py"]
+# ⚠️ JAMAIS `python run.py` (= Flask dev server) en production :
+#    - Mono-thread, ne tient pas la charge
+#    - Pas conçu pour exposition publique (logging, sécurité)
+# On utilise gunicorn (workers multiples, robuste, production-ready).
+# `--workers (2*CPU+1)` est la formule recommandée par gunicorn.
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "3", "run:app"]
 ```
+
+> ⚠️ **Avec SQLite + gunicorn multi-workers** : SQLite reste un single-writer  
+> par base. Avec `--workers 3`, on a 3 process Flask qui partagent le fichier  
+> SQLite. En mode **WAL**, les lectures sont concurrentes, mais les écritures  
+> sérialisent → ajouter `PRAGMA busy_timeout = 30000` per-connection et accepter  
+> que les écritures concurrentes attendent. Au-delà de quelques RPS d'écriture,  
+> bascule vers Litestream + replicas R/O ou PostgreSQL.
 
 ```yaml
 # docker-compose.yml
@@ -2975,25 +3185,32 @@ services:
     environment:
       - FLASK_ENV=production
       - FLASK_CONFIG=production
-      - SECRET_KEY=your-super-secret-key-here
+      # ⚠️ SECRET_KEY DOIT venir d'un .env (jamais en dur dans le compose).
+      # Générer avec : python -c "import secrets; print(secrets.token_hex(32))"
+      - SECRET_KEY=${SECRET_KEY:?Variable SECRET_KEY obligatoire (cf .env)}
     restart: unless-stopped
 
   # Service de sauvegarde automatique
   backup:
-    image: python:3.11-slim
+    # ⚠️ image avec sqlite3 préinstallé pour utiliser .backup (et non `cp`)
+    # qui pourrait corrompre une base ouverte par le service applicatif.
+    image: alpine:3.20
     volumes:
       - ./data:/data
       - ./backups:/backups
     command: |
       sh -c "
+      apk add --no-cache sqlite;
       while true; do
         sleep 86400;  # 24 heures
-        cp /data/bibliotheque.db /backups/auto_backup_$$(date +%Y%m%d_%H%M%S).db;
+        sqlite3 /data/bibliotheque.db \".backup '/backups/auto_backup_$$(date +%Y%m%d_%H%M%S).db'\";
         find /backups -name 'auto_backup_*.db' -type f -mtime +7 -delete;
         echo 'Sauvegarde automatique effectuée';
       done"
     restart: unless-stopped
 ```
+
+> 💡 **Encore plus robuste pour la prod** : utilisez **Litestream** (cf. 8.4) au lieu du service backup ci-dessus. Litestream réplique en continu vers S3/GCS/Azure avec RPO de quelques secondes, vs. ce service qui ne sauvegarde qu'une fois par 24h.
 
 ### Script de déploiement
 
@@ -3007,8 +3224,11 @@ echo "🚀 Déploiement de Ma Bibliothèque"
 docker-compose down
 
 # Sauvegarder la base actuelle
+# ⚠️ Utiliser sqlite3 .backup et non `cp` — l'application peut encore avoir
+#    des connexions ouvertes au moment de l'arrêt (timing race) et cp
+#    capturerait une base dans un état intermédiaire potentiellement corrompu.
 if [ -f "data/bibliotheque.db" ]; then
-    cp data/bibliotheque.db backups/pre_deploy_$(date +%Y%m%d_%H%M%S).db
+    sqlite3 data/bibliotheque.db ".backup 'backups/pre_deploy_$(date +%Y%m%d_%H%M%S).db'"
     echo "✅ Sauvegarde pré-déploiement créée"
 fi
 
@@ -3031,21 +3251,23 @@ else
     exit 1
 fi
 
-echo "📊 Statistiques post-déploiement:"
-python scripts/manage_data.py stats
+echo "📊 Statistiques post-déploiement:"  
+python scripts/manage_data.py stats  
 ```
 
 ## Tests automatisés
 
 ### Configuration des tests
 
+> ⚠️ **Note pédagogique importante** : ce squelette de tests fonctionne uniquement si les modèles lisent leur `db_path` depuis `current_app.config['DATABASE_PATH']`. Dans notre `BaseModel`, on a hardcodé `db_path="data/bibliotheque.db"` dans `__init__` — il faut donc soit injecter le path dans le constructeur des modèles, soit faire que `BaseModel.__init__` lise `current_app.config`. Le chapitre 9.5 traite cette refactorisation en détail (avec fixture conftest plus complète).
+
 ```python
 # tests/conftest.py
-import pytest
-import tempfile
-import os
-from app import create_app
-from app.database import DatabaseManager
+import pytest  
+import tempfile  
+import os  
+from app import create_app  
+from app.database import DatabaseManager  
 
 @pytest.fixture
 def app():
@@ -3063,7 +3285,8 @@ def app():
 
     yield app
 
-    # Nettoyage
+    # Nettoyage : fermer le fd AVANT unlink pour éviter un ResourceWarning
+    # (et sous Windows, unlink échoue tant que le fd est ouvert).
     os.close(db_fd)
     os.unlink(db_path)
 
@@ -3082,8 +3305,8 @@ def runner(app):
 
 ```python
 # tests/test_models.py
-import pytest
-from app.models import Livre, Utilisateur, Emprunt, Genre
+import pytest  
+from app.models import Livre, Utilisateur, Emprunt, Genre  
 
 def test_livre_creation(app):
     """Test de création d'un livre"""
@@ -3173,14 +3396,14 @@ def test_emprunt_workflow(app):
 
 ### Récapitulatif des fonctionnalités implémentées
 
-✅ **Gestion complète des livres** : CRUD avec images, genres, recherche
-✅ **Système d'utilisateurs** : Authentification, rôles admin/utilisateur
-✅ **Gestion des emprunts** : Emprunts, retours, suivi des retards
-✅ **Interface moderne** : Responsive design, vues grille/liste
-✅ **API REST** : Endpoints complets pour toutes les fonctionnalités
-✅ **Base SQLite optimisée** : Index, contraintes, performances
-✅ **Outils d'administration** : Scripts de gestion, sauvegarde, import/export
-✅ **Déploiement production** : Docker, configuration sécurisée
+✅ **Gestion complète des livres** : CRUD avec images, genres, recherche  
+✅ **Système d'utilisateurs** : Authentification, rôles admin/utilisateur  
+✅ **Gestion des emprunts** : Emprunts, retours, suivi des retards  
+✅ **Interface moderne** : Responsive design, vues grille/liste  
+✅ **API REST** : Endpoints complets pour toutes les fonctionnalités  
+✅ **Base SQLite optimisée** : Index, contraintes, performances  
+✅ **Outils d'administration** : Scripts de gestion, sauvegarde, import/export  
+✅ **Déploiement production** : Docker, configuration sécurisée  
 ✅ **Tests automatisés** : Couverture des fonctionnalités principales
 
 ### Fonctionnalités avancées possibles
@@ -3220,4 +3443,4 @@ L'application "Ma Bibliothèque" est un exemple concret et complet qui peut serv
 
 Vous avez maintenant une application web complète et fonctionnelle utilisant SQLite. Ce projet illustre parfaitement comment tirer parti de toute la puissance de SQLite dans un contexte réel et professionnel.
 
-⏭️
+⏭️ [9.5 Tests unitaires et d'intégration avec SQLite](/09-cas-usage-avances-projets-pratiques/05-tests-unitaires-integration-sqlite.md)

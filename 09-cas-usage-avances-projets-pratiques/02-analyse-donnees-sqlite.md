@@ -4,7 +4,7 @@
 
 ## Introduction : SQLite comme outil d'analyse
 
-Contrairement aux idées reçues, SQLite n'est pas seulement une base de données d'application. C'est un **excellent outil d'analyse de données** pour les datasets de petite à moyenne taille (jusqu'à plusieurs GB).
+Contrairement aux idées reçues, SQLite n'est pas seulement une base de données d'application. C'est un **excellent outil d'analyse de données**, viable jusqu'à plusieurs centaines de GB en lecture mono-process — voir le tableau « Comparaison avec d'autres outils » ci-dessous pour les critères de bascule.
 
 ### Pourquoi choisir SQLite pour l'analyse ?
 
@@ -17,11 +17,17 @@ Contrairement aux idées reçues, SQLite n'est pas seulement une base de donnée
 
 ### Comparaison avec d'autres outils
 
-```
-Dataset < 1GB     → SQLite (optimal)
-Dataset 1-10GB    → SQLite ou PostgreSQL
-Dataset > 10GB    → PostgreSQL, BigQuery, etc.
-```
+Le bon outil dépend moins de la **taille brute** que du **profil d'usage** (lecture seule vs concurrence d'écriture, agrégations vs OLTP). Voici un guide pragmatique :
+
+| Profil | Recommandation |
+|---|---|
+| **Analyse exploratoire single-user** (< 100 GB, lecture-écriture mono-process) | **SQLite** — parfaitement adapté, jusqu'à plusieurs centaines de GB |
+| **Agrégations massives** (window functions, GROUP BY sur millions de lignes) | **DuckDB** — moteur colonne, souvent 10-100× plus rapide |
+| **Multi-utilisateurs concurrents avec écritures fréquentes** | **PostgreSQL** — MVCC complet, plusieurs writers |
+| **Datasets > 1 TB, requêtes distribuées** | **ClickHouse**, BigQuery, Snowflake, Spark |
+| **Workflow data science Python** | **Polars** sur SQLite source, ou DuckDB en mémoire |
+
+> 💡 La taille seule n'est pas un critère bloquant pour SQLite (limite théorique : 281 TB). Le vrai critère est : **avez-vous plusieurs writers concurrents** ? Si oui → PostgreSQL ou Litestream + replicas R/O. Sinon → SQLite reste excellent même à grande échelle.
 
 ## Préparation de l'environnement d'analyse
 
@@ -29,8 +35,15 @@ Dataset > 10GB    → PostgreSQL, BigQuery, etc.
 
 ```bash
 # Installation des bibliothèques essentielles
-pip install pandas sqlite3 matplotlib seaborn plotly
+# ⚠️ NE PAS inclure 'sqlite3' dans pip install :
+#    sqlite3 est dans la bibliothèque standard Python (déjà installé).
+#    Le faire installerait un package PyPI tiers homonyme, NON compatible.
+pip install pandas matplotlib seaborn plotly chardet
 ```
+
+> 💡 **Alternative moderne 2024+ pour l'analyse** : [**DuckDB**](https://duckdb.org/) est un moteur OLAP embarqué (comme SQLite mais optimisé colonne par colonne pour l'analytique). Compatible avec les fichiers SQLite via `INSTALL sqlite; LOAD sqlite; ATTACH 'fichier.db' AS sql_db (TYPE sqlite);` — souvent **10-100× plus rapide** que SQLite pur sur de grosses agrégations. SQLite reste préférable pour les charges OLTP (lecture-écriture transactionnelle de petites lignes).  
+>  
+> [**Polars**](https://pola.rs/) (DataFrame Rust + Python) lit aussi du SQLite directement et surclasse pandas en performance sur les agrégations. Combinaison gagnante 2026 : SQLite pour le stockage transactionnel + DuckDB ou Polars pour l'analytique lourde.
 
 ### Structure de projet recommandée
 
@@ -66,9 +79,9 @@ date,produit,categorie,quantite,prix_unitaire,vendeur
 ### Script d'import automatisé
 
 ```python
-import sqlite3
-import pandas as pd
-from datetime import datetime
+import sqlite3  
+import pandas as pd  
+from datetime import datetime  
 
 class AnalyseurVentes:
     def __init__(self, db_path="data/analysis.db"):
@@ -112,6 +125,12 @@ class AnalyseurVentes:
             # Nettoyage des données
             df = self.nettoyer_donnees(df)
 
+            # ⚠️ La colonne `chiffre_affaires` est GENERATED dans la table.
+            #    On ne peut PAS l'insérer (sqlite3.OperationalError: cannot
+            #    INSERT into generated column). Si le CSV contient cette
+            #    colonne, on doit la retirer avant `to_sql`.
+            df = df.drop(columns=['chiffre_affaires'], errors='ignore')
+
             # Import dans SQLite
             with sqlite3.connect(self.db_path) as conn:
                 df.to_sql('ventes', conn, if_exists='append', index=False)
@@ -124,33 +143,51 @@ class AnalyseurVentes:
             return 0
 
     def nettoyer_donnees(self, df):
-        """Nettoie et valide les données"""
+        """Nettoie et valide les données.
+
+        Stratégie : on retourne un DataFrame "propre" SANS modifier l'original
+        (df.copy()), et on filtre les lignes invalides au lieu de planter
+        l'import complet sur la première ligne fautive.
+        """
+        df = df.copy()
+
         # Supprimer les lignes avec des valeurs manquantes
         df = df.dropna()
 
-        # Convertir les dates au format ISO
-        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+        # Convertir les dates — `errors='coerce'` met les dates invalides à NaT
+        # (au lieu de planter), puis on filtre. Plus robuste qu'un crash brutal.
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        nb_dates_invalides = df['date'].isna().sum()
+        if nb_dates_invalides > 0:
+            print(f"⚠️ {nb_dates_invalides} lignes avec date invalide ignorées")
+            df = df.dropna(subset=['date'])
+        df['date'] = df['date'].dt.strftime('%Y-%m-%d')
 
-        # Valider que quantité et prix sont positifs
+        # Valider que quantité et prix sont positifs (avec coercion)
+        df['quantite'] = pd.to_numeric(df['quantite'], errors='coerce')
+        df['prix_unitaire'] = pd.to_numeric(df['prix_unitaire'], errors='coerce')
+        df = df.dropna(subset=['quantite', 'prix_unitaire'])
         df = df[(df['quantite'] > 0) & (df['prix_unitaire'] > 0)]
 
         # Nettoyer les chaînes de caractères
-        df['produit'] = df['produit'].str.strip()
-        df['categorie'] = df['categorie'].str.strip()
-        df['vendeur'] = df['vendeur'].str.strip()
+        for col in ('produit', 'categorie', 'vendeur'):
+            df[col] = df[col].astype(str).str.strip()
 
         return df
 
 # Utilisation
-analyseur = AnalyseurVentes()
-analyseur.importer_csv("data/raw/ventes_2024.csv")
+analyseur = AnalyseurVentes()  
+analyseur.importer_csv("data/raw/ventes_2024.csv")  
 ```
 
 ## Étape 2 : Analyses descriptives simples
 
 ### Statistiques de base
 
+> 📝 **Convention dans ce chapitre** : les méthodes ci-dessous appartiennent à la classe `AnalyseurVentes` définie plus haut. Ajoutez-les à la classe (pas au niveau module) en respectant l'indentation `    def ...`. Les blocs sont séparés pour la lisibilité pédagogique.
+
 ```python
+# Méthode à ajouter dans la classe AnalyseurVentes
 def analyses_de_base(self):
     """Génère les statistiques descriptives de base"""
     with sqlite3.connect(self.db_path) as conn:
@@ -169,11 +206,15 @@ def analyses_de_base(self):
         ''')
 
         stats = cursor.fetchone()
+        if stats[0] == 0:
+            print("⚠️ Aucune vente dans la base — analyses vides.")
+            return  # éviter les ValueError sur les formats sur None
+
         print(f"Nombre de ventes : {stats[0]:,}")
         print(f"Produits différents : {stats[1]:,}")
         print(f"Vendeurs actifs : {stats[2]}")
         print(f"Période : {stats[3]} à {stats[4]}")
-        print(f"CA total : {stats[5]:,.2f} €")
+        print(f"CA total : {stats[5] or 0:,.2f} €")
 
         # 2. Top des catégories
         print("\n=== TOP CATÉGORIES ===")
@@ -353,8 +394,8 @@ def analyser_abc_produits(self):
 ### Intégration avec Matplotlib
 
 ```python
-import matplotlib.pyplot as plt
-import pandas as pd
+import matplotlib.pyplot as plt  
+import pandas as pd  
 
 def generer_graphiques(self):
     """Génère des graphiques d'analyse"""
@@ -423,6 +464,9 @@ def generer_graphiques(self):
     plt.ylabel('Fréquence')
 
     plt.tight_layout()
+    # ⚠️ Créer le dossier de sortie avant savefig sinon FileNotFoundError
+    import os
+    os.makedirs('exports', exist_ok=True)
     plt.savefig('exports/analyse_ventes.png', dpi=300, bbox_inches='tight')
     plt.show()
 
@@ -434,8 +478,16 @@ def generer_graphiques(self):
 ### Rapport HTML automatique
 
 ```python
+from datetime import datetime  
+from html import escape  # ⚠️ Échappement obligatoire avant injection HTML  
+
 def generer_rapport_html(self):
-    """Génère un rapport HTML complet"""
+    """Génère un rapport HTML complet.
+
+    ⚠️ Sécurité : les noms de produits/vendeurs viennent de la BDD et peuvent
+       contenir du HTML/JavaScript injecté (XSS stocké). On utilise
+       `html.escape()` sur toute valeur de la BDD avant interpolation.
+    """
 
     html_content = f"""
     <!DOCTYPE html>
@@ -492,7 +544,13 @@ def generer_rapport_html(self):
         ''')
 
         for row in cursor.fetchall():
-            html_content += f"<tr><td>{row[0]}</td><td>{row[1]:,.2f} €</td><td>{row[2]}</td></tr>"
+            # ⚠️ escape() obligatoire sur row[0] (nom de produit depuis la BDD)
+            #    sinon un produit contenant '<script>...</script>' injecte du JS.
+            html_content += (
+                f"<tr><td>{escape(str(row[0]))}</td>"
+                f"<td>{row[1]:,.2f} €</td>"
+                f"<td>{row[2]}</td></tr>"
+            )
 
         html_content += "</table>"
 
@@ -508,6 +566,8 @@ def generer_rapport_html(self):
     """
 
     # Sauvegarder le rapport
+    import os
+    os.makedirs('exports', exist_ok=True)
     with open('exports/rapport_ventes.html', 'w', encoding='utf-8') as f:
         f.write(html_content)
 
@@ -563,9 +623,9 @@ CREATE TABLE logs_web (
 Utilisez Plotly Dash pour créer un dashboard interactif :
 
 ```python
-import dash
-from dash import dcc, html
-import plotly.express as px
+import dash  
+from dash import dcc, html  
+import plotly.express as px  
 
 # Créer une interface web pour explorer vos données
 ```
@@ -596,12 +656,42 @@ def optimiser_pour_analyse(self):
 
 ```sql
 -- Index composites pour les analyses temporelles
-CREATE INDEX idx_ventes_date_vendeur ON ventes(date, vendeur);
-CREATE INDEX idx_ventes_categorie_date ON ventes(categorie, date);
+CREATE INDEX idx_ventes_date_vendeur ON ventes(date, vendeur);  
+CREATE INDEX idx_ventes_categorie_date ON ventes(categorie, date);  
 
 -- Index pour les agrégations
 CREATE INDEX idx_ventes_ca ON ventes(chiffre_affaires);
 ```
+
+### Bascule pratique vers DuckDB pour les agrégations lourdes
+
+Quand un `SELECT … GROUP BY` sur plusieurs millions de lignes devient lent en SQLite (même avec les bons index), basculer vers **DuckDB** ne demande pas de migrer les données : il lit le fichier SQLite directement.
+
+```python
+# pip install duckdb
+import duckdb
+
+con = duckdb.connect()  # connexion DuckDB en mémoire  
+con.execute("INSTALL sqlite; LOAD sqlite;")  
+con.execute("ATTACH 'data/analysis.db' AS s (TYPE sqlite);")  
+
+# La même requête analytique, exécutée par le moteur colonne de DuckDB.
+# ⚠️ La colonne `date` est TEXT dans SQLite (cf. CREATE TABLE plus haut).
+#    DuckDB exige un cast explicite `::DATE` car `strftime` n'auto-convertit
+#    pas les VARCHAR. Sans le cast :
+#      BinderException: Could not choose a best candidate function for
+#      strftime(VARCHAR, STRING_LITERAL).
+df = con.execute("""
+    SELECT s.ventes.categorie,
+           strftime(s.ventes.date::DATE, '%Y-%m') AS mois,
+           SUM(s.ventes.quantite * s.ventes.prix_unitaire) AS ca
+    FROM s.ventes
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+""").df()  # retourne un pandas DataFrame
+```
+
+> 💡 **Quand basculer ?** Si une agrégation prend plus de quelques secondes en SQLite, le moteur colonne DuckDB est souvent 10-100× plus rapide. Les écritures restent sur SQLite (OLTP), DuckDB sert uniquement de moteur de lecture analytique sur la même base.
 
 ## Bonnes pratiques pour l'analyse
 
@@ -626,9 +716,12 @@ CREATE INDEX idx_ventes_ca ON ventes(chiffre_affaires);
 ### Pour aller plus loin
 
 - **Jupyter Notebooks** : Pour l'exploration interactive
-- **Apache Superset** : Dashboard BI avec SQLite
-- **Metabase** : Outil de visualisation simple
-- **DBeaver** : Client SQL avancé avec graphiques
+- **Apache Superset** : Dashboard BI avec SQLite (open source)
+- **Metabase** : Outil de visualisation simple (open source)
+- **DBeaver Community** : Client SQL universel avec graphiques basiques
+- **JetBrains DataGrip** : Client SQL professionnel (payant)
+- **DuckDB** : moteur analytique OLAP, lit nativement les fichiers SQLite via `ATTACH 'file.db' AS s (TYPE sqlite)` — souvent **10-100× plus rapide** sur les agrégations lourdes
+- **Polars** : DataFrame Rust + Python, surclasse pandas, lit du SQLite
 
 ## Conclusion
 
@@ -639,10 +732,11 @@ Les scripts développés dans cette section peuvent être adaptés à vos propre
 ---
 
 **Points clés à retenir :**
-- SQLite excelle pour l'analyse de datasets < 10GB
-- L'optimisation des requêtes est cruciale pour les performances
+- SQLite est viable pour l'analyse jusqu'à plusieurs centaines de GB (cf. tableau « Comparaison avec d'autres outils »)
+- Le vrai critère de bascule est la **concurrence d'écriture**, pas la taille
+- L'optimisation des requêtes (index, `ANALYZE`, plans d'exécution) est cruciale
 - La visualisation enrichit considérablement l'analyse
 - L'automatisation des rapports fait gagner un temps précieux
-- La documentation des analyses facilite leur réutilisation
+- Pour les agrégations massives : DuckDB (lit les fichiers SQLite directement)
 
-⏭️
+⏭️ [9.3 Migration de données entre différents formats](/09-cas-usage-avances-projets-pratiques/03-migration-donnees-differents-formats.md)
