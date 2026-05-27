@@ -79,15 +79,96 @@ La nature de fichier unique de SQLite simplifie certains aspects de la sauvegard
 
 **Outils de ligne de commande**
 
-- **SQLite CLI** : Interface principale pour l'administration manuelle
-- **sqlite3_analyzer** : Analyse détaillée de la structure et utilisation de l'espace
-- **Scripts personnalisés** : Automatisation des tâches récurrentes
+- **SQLite CLI** (`sqlite3`) : interface principale pour l'administration manuelle
+- **sqlite3_analyzer** : analyse détaillée de la structure et utilisation de l'espace (téléchargeable depuis [sqlite.org](https://sqlite.org/download.html))
+- **Scripts personnalisés** : automatisation des tâches récurrentes (cron, systemd timers)
 
-**Outils de développement**
+**Outils de développement et clients graphiques**
 
-- **Gestionnaires de base graphiques** : DB Browser for SQLite, SQLiteStudio
-- **Extensions et modules** : Fonctionnalités additionnelles selon les besoins
-- **Bibliothèques de monitoring** : Intégration de métriques dans l'application
+- **DB Browser for SQLite** : multi-plateforme, gratuit ([sqlitebrowser.org](https://sqlitebrowser.org/))
+- **SQLiteStudio** : alternative légère et open-source
+- **DBeaver Community** : client universel multi-BDD
+- **TablePlus** / **JetBrains DataGrip** : clients professionnels (payants)
+
+**Outils spécifiques sécurité et administration**
+
+- **SQLCipher** : fork de SQLite avec chiffrement AES-256 transparent du fichier (voir 8.1)
+- **Litestream** : réplication continue vers S3/Azure/GCS pour la sauvegarde et disponibilité (voir 8.4)
+- **LiteFS** : système de fichiers distribué pour clustering SQLite avec failover
+- **`pragma_*` virtual tables** : interroger les PRAGMA depuis SQL pour le monitoring
+
+> ⚠️ **À ne JAMAIS faire** : utiliser SQLite sur un **partage réseau** (NFS, SMB, SSHFS). Le verrouillage de fichier n'est pas garanti correctement sur ces filesystems → corruption probable. Pour la haute disponibilité ou l'accès multi-machine, utilisez Litestream, LiteFS, ou migrez vers un SGBD client-serveur.
+
+### Prérequis Python pour ce chapitre
+
+Plusieurs bibliothèques Python sont utilisées dans les exemples des sections 8.1 à 8.5. Pour exécuter l'ensemble des exemples, installez d'un coup :
+
+```bash
+# Crypto + bindings SQLite chiffré (8.1)
+pip install sqlcipher3-binary cryptography argon2-cffi bcrypt
+
+# Audit / monitoring / dashboard (8.3, 8.5)
+pip install psutil schedule flask requests pyyaml structlog python-json-logger
+
+# Optionnel — analyse forensique avancée (8.3)
+pip install networkx matplotlib
+```
+
+> 💡 **Sélection minimale** : si vous voulez juste suivre les sections 8.2 (permissions), 8.3 (audit) et 8.4 (sauvegardes) sans chiffrement ni dashboard, seul `pip install cryptography` suffit (le module `sqlite3` est dans la stdlib Python).
+
+**Niveau de difficulté** : ce chapitre suppose connue la **section 7 (transactions et concurrence)** car beaucoup d'exemples utilisent WAL, `Connection.backup()` et `isolation_level=None`. Si ces concepts sont flous, relire 7.1 et 7.4 avant d'attaquer 8.4.
+
+### 🔧 Boilerplate à mettre en haut de tout module du chapitre
+
+Les sections 8.2 → 8.5 supposent **trois lignes de configuration** en début d'application. Sans elles, des bugs silencieux apparaissent (rapports temporels faux, `DeprecationWarning` Python 3.12+, performances WAL non activées). À copier-coller **une seule fois** dans votre point d'entrée :
+
+```python
+import sqlite3  
+from datetime import datetime, timezone  
+
+# ── 1. Adapter datetime → "YYYY-MM-DD HH:MM:SS" en UTC ─────────────────────
+#    À appeler UNE SEULE FOIS au démarrage du processus (registre global).
+#    Règle 2 problèmes d'un coup :
+#      (a) DeprecationWarning Python 3.12+ sur datetime → cursor.execute()
+#      (b) Bug silencieux UTC/local : CURRENT_TIMESTAMP est en UTC alors que
+#          datetime.now() est en local → filtres temporels faux selon le
+#          fuseau (rapports « dernière heure » qui ratent des entrées).
+def _adapter_dt_utc(d):
+    if d.tzinfo is None:
+        d = d.astimezone(timezone.utc)
+    else:
+        d = d.astimezone(timezone.utc)
+    return d.strftime("%Y-%m-%d %H:%M:%S")
+sqlite3.register_adapter(datetime, _adapter_dt_utc)
+
+# ── 2. Init UNE FOIS par base : PRAGMA persistants (journal_mode) ──────────
+#    `journal_mode = WAL` est écrit dans le header de la base → persiste.
+#    Bénéfices : lecture concurrente, prérequis Litestream (8.4), `.backup()`
+#    sur base active fonctionne mieux.
+def init_base(chemin):
+    """À appeler une fois après création d'une nouvelle base SQLite."""
+    conn = sqlite3.connect(chemin)
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.close()
+
+# ── 3. Wrapper de connexion : PRAGMA per-connection (foreign_keys) ─────────
+#    ⚠️ PIÈGE : `PRAGMA foreign_keys = ON` est PER-CONNECTION (pas persistant).
+#    Si vous ne le rejouez pas à chaque ouverture, les FK ne sont PAS vérifiées.
+#    → utilisez ce wrapper partout au lieu de sqlite3.connect() direct.
+def ouvrir_connexion(chemin, **kwargs):
+    """Ouverture de connexion avec les PRAGMA per-connection rejoués."""
+    conn = sqlite3.connect(chemin, **kwargs)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+```
+
+> 💡 **Pourquoi pas dans chaque section ?** Pour éviter la duplication. Chaque fichier 8.x rappelle ces lignes dans un encadré `⚠️` mais le code complet et **validé par test** est ici. Si vous copiez-collez un exemple isolé d'une section, pensez à y ajouter ce boilerplate.  
+>  
+> **Distinction critique entre `init_base()` et `ouvrir_connexion()`** :  
+> - **Persistant (dans `init_base`)** : `journal_mode`, `page_size`, `auto_vacuum`, `application_id`, `user_version`  
+> - **Per-connection (dans `ouvrir_connexion`)** : `foreign_keys`, `recursive_triggers`, `cache_size`, `temp_store`, `synchronous` (sauf en WAL où il devient persistant), `mmap_size`  
+>  
+> Confondre les deux est un piège classique : on active `foreign_keys` à la création de la base, puis on s'étonne que les contraintes ne soient pas vérifiées en production.
 
 ### Vue d'ensemble des sections suivantes
 

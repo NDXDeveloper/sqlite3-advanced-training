@@ -43,9 +43,9 @@ Les sauvegardes sont essentielles pour protéger vos données contre la perte, l
 ### 1. Copie simple de fichier (À éviter en production)
 
 ```python
-import shutil
-import sqlite3
-from datetime import datetime
+import shutil  
+import sqlite3  
+from datetime import datetime  
 
 def sauvegarde_simple_dangereuse(source_db, destination):
     """
@@ -81,10 +81,23 @@ def sauvegarde_simple_dangereuse(source_db, destination):
 
 ### 2. API de sauvegarde SQLite (Méthode recommandée)
 
+> ⚠️ **Python 3.12+ : adapter datetime obligatoire (avec normalisation UTC)**  
+>  
+> Comme expliqué en 8.2 et 8.3, deux pièges combinés : `datetime` direct à `execute()` est déprécié, ET `CURRENT_TIMESTAMP` est en UTC alors que `datetime.now()` est en local. Sans normalisation, les rapports de rétention/nettoyage **manquent des entrées** silencieusement sur les systèmes hors UTC.
+
 ```python
-import sqlite3
-import os
-from datetime import datetime
+import sqlite3  
+import os  
+from datetime import datetime, timezone  
+
+# Adapter Python 3.12+ + normalisation UTC (cf. notes des sections 8.2/8.3)
+def _adapter_dt_utc(d):
+    if d.tzinfo is None:
+        d = d.astimezone(timezone.utc)
+    else:
+        d = d.astimezone(timezone.utc)
+    return d.strftime("%Y-%m-%d %H:%M:%S")
+sqlite3.register_adapter(datetime, _adapter_dt_utc)
 
 class GestionnaireSauvegarde:
     def __init__(self, base_source):
@@ -136,11 +149,12 @@ class GestionnaireSauvegarde:
             test_conn = sqlite3.connect(fichier_destination)
             cursor = test_conn.cursor()
 
-            # Test d'intégrité
+            # Test d'intégrité — PRAGMA integrity_check peut retourner
+            # plusieurs lignes en cas de corruption multiple, d'où fetchall().
             cursor.execute("PRAGMA integrity_check")
-            resultat = cursor.fetchone()[0]
+            lignes_integrite = [row[0] for row in cursor.fetchall()]
 
-            if resultat == 'ok':
+            if lignes_integrite == ['ok']:
                 print("✅ Intégrité de la sauvegarde vérifiée")
 
                 # Compter les tables pour validation supplémentaire
@@ -151,7 +165,9 @@ class GestionnaireSauvegarde:
                 test_conn.close()
                 return True
             else:
-                print(f"❌ Problème d'intégrité: {resultat}")
+                print(f"❌ {len(lignes_integrite)} problème(s) d'intégrité :")
+                for ligne in lignes_integrite[:5]:
+                    print(f"   • {ligne}")
                 test_conn.close()
                 return False
 
@@ -161,18 +177,29 @@ class GestionnaireSauvegarde:
 
     def sauvegarde_incrementielle(self, fichier_destination, derniere_sauvegarde=None):
         """
-        Sauvegarde incrémentielle basée sur les timestamps
-        Note: SQLite ne supporte pas nativement les sauvegardes incrémentales
-        Cette méthode simule le concept
+        Sauvegarde incrémentielle basée sur les timestamps.
+
+        ⚠️ LIMITES IMPORTANTES :
+        - SQLite ne supporte pas nativement les sauvegardes incrémentales.
+        - En mode WAL, les écritures vont dans le fichier `.db-wal` SANS modifier
+          le mtime du fichier `.db` principal tant qu'aucun checkpoint n'a eu lieu.
+          → la détection par mtime peut RATER des modifications récentes.
+        - Solution robuste : utiliser **Litestream** (réplication continue du WAL)
+          plutôt que de réinventer l'incrémental.
         """
-        print("📈 Sauvegarde incrémentielle...")
+        print("📈 Sauvegarde incrémentielle (méthode basique)...")
 
         if not derniere_sauvegarde:
             print("   Première sauvegarde - sauvegarde complète")
             return self.sauvegarde_avec_verification(fichier_destination)
 
         try:
-            # Comparer les dates de modification
+            # Forcer un checkpoint pour que les changements WAL soient pris en compte
+            conn = sqlite3.connect(self.base_source)
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            conn.close()
+
+            # Comparer les dates de modification (après checkpoint)
             source_modif = os.path.getmtime(self.base_source)
             backup_modif = os.path.getmtime(derniere_sauvegarde)
 
@@ -193,16 +220,100 @@ gestionnaire = GestionnaireSauvegarde('ma_base.db')
 print("=== TEST DES MÉTHODES DE SAUVEGARDE ===")
 
 # Sauvegarde basique sécurisée
-timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-fichier_backup = f'backup_{timestamp}.db'
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')  
+fichier_backup = f'backup_{timestamp}.db'  
 
 if gestionnaire.sauvegarde_sqlite_api(fichier_backup):
     print(f"✅ Sauvegarde créée: {fichier_backup}")
 
 # Sauvegarde avec vérification
-fichier_backup_verifie = f'backup_verifie_{timestamp}.db'
-gestionnaire.sauvegarde_avec_verification(fichier_backup_verifie)
+fichier_backup_verifie = f'backup_verifie_{timestamp}.db'  
+gestionnaire.sauvegarde_avec_verification(fichier_backup_verifie)  
 ```
+
+### Litestream : sauvegarde continue vers S3 (recommandé 2024+)
+
+[Litestream](https://litestream.io/) est devenu **le standard de facto** pour la sauvegarde des bases SQLite en production. Plutôt que de planifier des snapshots périodiques, Litestream **réplique en continu** le WAL vers un stockage objet (S3, Azure Blob, GCS, SFTP). Avantages décisifs :
+
+- **RPO de quelques secondes** au lieu de "dernière sauvegarde minuit"
+- **Aucune modification du code applicatif** : Litestream lit simplement le journal WAL
+- **Restauration point-in-time** : retour à n'importe quel instant
+- **Coût stockage faible** : utilise les classes "infrequent access" de S3
+
+**Installation et configuration de base** :
+
+```bash
+# Installation Linux (binaire unique, pas de dépendances)
+# Version 0.5.11 — dernière stable en avril 2026 ; vérifier sur
+# https://github.com/benbjohnson/litestream/releases pour la plus récente.
+wget https://github.com/benbjohnson/litestream/releases/download/v0.5.11/litestream-v0.5.11-linux-amd64.tar.gz  
+tar -xzf litestream-v0.5.11-linux-amd64.tar.gz  
+sudo mv litestream /usr/local/bin/  
+
+# Vérifier
+litestream version
+```
+
+> 💡 **Migration v0.3.x → v0.5.x** : la branche 0.5 a introduit un nouveau format  
+> de stockage incompatible avec 0.3. Si vous avez des sauvegardes existantes en  
+> 0.3.x, consultez la [Migration Guide](https://litestream.io/docs/migration/)  
+> avant de mettre à jour en production. Pour une nouvelle installation, prenez  
+> directement 0.5.x.
+
+**`/etc/litestream.yml`** :
+```yaml
+dbs:
+  - path: /var/lib/app/data.db
+    replicas:
+      - type: s3
+        bucket: mon-bucket-backup
+        path: production/data.db
+        region: eu-west-1
+        # AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY via env
+        retention: 168h           # 7 jours d'historique
+        snapshot-interval: 24h    # snapshot complet quotidien
+        sync-interval: 1s         # envoi continu toutes les secondes
+```
+
+**Démarrage en service systemd** :
+```bash
+sudo tee /etc/systemd/system/litestream.service <<'EOF'
+[Unit]
+Description=Litestream replicator  
+After=network.target  
+
+[Service]
+ExecStart=/usr/local/bin/litestream replicate  
+Restart=always  
+EnvironmentFile=/etc/litestream.env  
+
+[Install]
+WantedBy=multi-user.target  
+EOF  
+
+sudo systemctl enable --now litestream
+```
+
+**Restauration depuis S3** :
+```bash
+# Dernière version
+litestream restore -o /var/lib/app/data.db s3://mon-bucket/production/data.db
+
+# Point-in-time recovery — retour à un instant précis
+litestream restore \
+    -timestamp 2026-05-27T10:30:00Z \
+    -o /var/lib/app/data.db \
+    s3://mon-bucket/production/data.db
+```
+
+> ⚠️ **Pré-requis Litestream** :  
+> - **Mode WAL obligatoire** (`PRAGMA journal_mode = WAL`) — Litestream lit le `.db-wal`  
+> - **Un seul processus Litestream par base** (sinon corruption)  
+> - **Asymétrique uniquement** : primary → N replicas en lecture seule. Pour multi-maître, voir cr-sqlite, ElectricSQL ou PowerSync (cf. 7.5)
+
+### LiteFS : haute disponibilité avec failover
+
+[LiteFS](https://fly.io/docs/litefs/) (par les mêmes auteurs que Litestream) va plus loin : système de fichiers FUSE qui réplique au niveau **page** vers un cluster distribué. Permet plusieurs nœuds avec **failover automatique**. Compromis : un seul writer à la fois (élection de leader via Consul), les lecteurs voient des données avec un léger lag.
 
 ### 3. Sauvegarde en ligne de commande
 
@@ -211,14 +322,14 @@ gestionnaire.sauvegarde_avec_verification(fichier_backup_verifie)
 # Script de sauvegarde SQLite sécurisé
 
 # Configuration
-SOURCE_DB="ma_base.db"
-BACKUP_DIR="/backup/sqlite"
-DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_FILE="$BACKUP_DIR/backup_$DATE.db"
+SOURCE_DB="ma_base.db"  
+BACKUP_DIR="/backup/sqlite"  
+DATE=$(date +%Y%m%d_%H%M%S)  
+BACKUP_FILE="$BACKUP_DIR/backup_$DATE.db"  
 
-echo "🔄 Début de la sauvegarde SQLite"
-echo "Source: $SOURCE_DB"
-echo "Destination: $BACKUP_FILE"
+echo "🔄 Début de la sauvegarde SQLite"  
+echo "Source: $SOURCE_DB"  
+echo "Destination: $BACKUP_FILE"  
 
 # Créer le répertoire de sauvegarde si nécessaire
 mkdir -p "$BACKUP_DIR"
@@ -271,13 +382,14 @@ echo "✅ Processus de sauvegarde terminé"
 ### Planificateur de sauvegardes Python
 
 ```python
-import schedule
-import time
-import threading
-from datetime import datetime, timedelta
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import schedule  
+import time  
+import threading  
+import os  
+import smtplib  
+from datetime import datetime, timedelta  
+from email.mime.text import MIMEText  
+from email.mime.multipart import MIMEMultipart  
 
 class PlanificateurSauvegarde:
     def __init__(self, base_source, repertoire_backup="/backup"):
@@ -287,14 +399,20 @@ class PlanificateurSauvegarde:
         self.derniere_sauvegarde = None
         self.historique_sauvegardes = []
 
-        # Configuration des notifications
+        # ⚠️ Configuration des notifications via variables d'environnement
+        #    JAMAIS de mot de passe SMTP en dur dans le code (commit Git = fuite).
+        #    Préférer un secret manager en production (Vault, AWS Secrets, ...).
         self.email_config = {
-            'smtp_server': 'smtp.gmail.com',
-            'smtp_port': 587,
-            'email_from': 'votre-app@example.com',
-            'email_to': 'admin@example.com',
-            'password': 'votre-mot-de-passe-app'
+            'smtp_server': os.environ.get('SMTP_SERVER', 'smtp.gmail.com'),
+            'smtp_port': int(os.environ.get('SMTP_PORT', '587')),
+            'email_from': os.environ.get('SMTP_FROM', 'app@example.com'),
+            'email_to': os.environ.get('SMTP_TO', 'admin@example.com'),
+            'password': os.environ.get('SMTP_PASSWORD'),  # None si non défini
         }
+        # Désactiver l'envoi si mot de passe manquant plutôt que crasher au runtime
+        self.email_actif = bool(self.email_config['password'])
+        if not self.email_actif:
+            print("ℹ️ SMTP_PASSWORD non définie — notifications email désactivées.")
 
     def sauvegarde_quotidienne(self):
         """Exécute une sauvegarde quotidienne"""
@@ -448,7 +566,9 @@ class PlanificateurSauvegarde:
             print(f"⚠️ Erreur lors du nettoyage: {e}")
 
     def _envoyer_notification(self, sujet, message):
-        """Envoie une notification par email"""
+        """Envoie une notification par email (silencieusement skippé si désactivé)"""
+        if not self.email_actif:
+            return  # Pas de mot de passe SMTP → on n'essaie pas
         try:
             msg = MIMEMultipart()
             msg['From'] = self.email_config['email_from']
@@ -460,8 +580,8 @@ Notification de sauvegarde SQLite
 
 {message}
 
-Base de données: {self.base_source}
-Timestamp: {datetime.now()}
+Base de données: {self.base_source}  
+Timestamp: {datetime.now()}  
 
 Historique récent:
 {self._generer_historique_recent()}
@@ -614,9 +734,9 @@ print("\nℹ️ Pour activer en production, décommenter 'demarrer_planificateur
 ### Détection et réparation de corruption
 
 ```python
-import sqlite3
-import shutil
-from datetime import datetime
+import sqlite3  
+import shutil  
+from datetime import datetime  
 
 class GestionnaireRecuperation:
     def __init__(self, base_problematique):
@@ -728,12 +848,17 @@ class GestionnaireRecuperation:
         print(f"\n🔧 TENTATIVE DE RÉPARATION AUTOMATIQUE")
         print("=" * 50)
 
-        # Créer une sauvegarde avant réparation
+        # Créer une sauvegarde avant réparation — ⚠️ utiliser l'API .backup()
+        # de SQLite : si la base est ouverte ailleurs, shutil.copy peut
+        # produire une copie incohérente.
+        from contextlib import closing
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         backup_avant = f"{self.base_problematique}.avant_reparation_{timestamp}"
 
         try:
-            shutil.copy2(self.base_problematique, backup_avant)
+            with closing(sqlite3.connect(self.base_problematique)) as src, \
+                 closing(sqlite3.connect(backup_avant)) as dst:
+                src.backup(dst)
             print(f"💾 Sauvegarde créée avant réparation: {backup_avant}")
         except Exception as e:
             print(f"⚠️ Impossible de créer une sauvegarde: {e}")
@@ -743,14 +868,15 @@ class GestionnaireRecuperation:
         reparations_effectuees = []
 
         try:
-            conn = sqlite3.connect(self.base_problematique)
+            # ⚠️ isolation_level=None requis pour VACUUM (qui ne peut pas
+            #    s'exécuter dans une transaction implicite du module sqlite3).
+            conn = sqlite3.connect(self.base_problematique, isolation_level=None)
             cursor = conn.cursor()
 
             # 1. Tentative de récupération via VACUUM
             print("🔄 Tentative VACUUM...")
             try:
                 cursor.execute("VACUUM")
-                conn.commit()
                 print("✅ VACUUM réussi")
                 reparations_effectuees.append("VACUUM")
             except Exception as e:
@@ -795,8 +921,12 @@ class GestionnaireRecuperation:
             print(f"❌ Erreur durant la réparation: {e}")
             print("🔄 Restauration de la sauvegarde...")
 
+            # Ici la base cible est inutilisable, on peut utiliser shutil sûrement
+            # (pas de connexion ouverte) — mais pour cohérence on garde .backup().
             try:
-                shutil.copy2(backup_avant, self.base_problematique)
+                with closing(sqlite3.connect(backup_avant)) as src, \
+                     closing(sqlite3.connect(self.base_problematique)) as dst:
+                    src.backup(dst)
                 print("✅ Base restaurée à l'état précédent")
             except Exception as restore_error:
                 print(f"🚨 CRITIQUE: Impossible de restaurer - {restore_error}")
@@ -880,13 +1010,15 @@ class GestionnaireRecuperation:
 
                 # Vérifier l'intégrité de l'export
                 cursor_dest.execute("PRAGMA integrity_check")
-                integrite_export = cursor_dest.fetchone()[0]
+                lignes_integrite = [row[0] for row in cursor_dest.fetchall()]
 
-                if integrite_export == 'ok':
+                if lignes_integrite == ['ok']:
                     print("✅ Intégrité de l'export vérifiée")
                     return True
                 else:
-                    print(f"❌ Problème d'intégrité dans l'export: {integrite_export}")
+                    print(f"❌ {len(lignes_integrite)} problème(s) d'intégrité dans l'export :")
+                    for ligne in lignes_integrite[:5]:
+                        print(f"   • {ligne}")
                     return False
 
             except Exception as e:
@@ -898,11 +1030,14 @@ class GestionnaireRecuperation:
             return False
 
         finally:
-            try:
-                conn_source.close()
-                conn_dest.close()
-            except:
-                pass
+            # Fermeture défensive — les connexions peuvent ne pas avoir été
+            # créées si l'ouverture initiale a échoué (NameError sinon).
+            for c in (locals().get('conn_source'), locals().get('conn_dest')):
+                if c is not None:
+                    try:
+                        c.close()
+                    except sqlite3.Error:
+                        pass
 
     def restaurer_depuis_sauvegarde(self, fichier_sauvegarde, remplacer=False):
         """Restaure la base depuis une sauvegarde"""
@@ -921,11 +1056,13 @@ class GestionnaireRecuperation:
             conn_test = sqlite3.connect(fichier_sauvegarde)
             cursor_test = conn_test.cursor()
             cursor_test.execute("PRAGMA integrity_check")
-            resultat = cursor_test.fetchone()[0]
+            lignes_integrite = [row[0] for row in cursor_test.fetchall()]
             conn_test.close()
 
-            if resultat != 'ok':
-                print(f"❌ Sauvegarde corrompue: {resultat}")
+            if lignes_integrite != ['ok']:
+                print(f"❌ Sauvegarde corrompue ({len(lignes_integrite)} signalements) :")
+                for ligne in lignes_integrite[:5]:
+                    print(f"   • {ligne}")
                 return False
             else:
                 print("✅ Sauvegarde intègre")
@@ -935,17 +1072,24 @@ class GestionnaireRecuperation:
             return False
 
         # Créer une sauvegarde de l'état actuel si demandé
+        # ⚠️ Toujours utiliser l'API .backup() de SQLite plutôt que shutil.copy
+        from contextlib import closing
         if not remplacer and os.path.exists(self.base_problematique):
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             backup_actuel = f"{self.base_problematique}.avant_restauration_{timestamp}"
 
             try:
-                shutil.copy2(self.base_problematique, backup_actuel)
+                with closing(sqlite3.connect(self.base_problematique)) as src, \
+                     closing(sqlite3.connect(backup_actuel)) as dst:
+                    src.backup(dst)
                 print(f"💾 État actuel sauvegardé: {backup_actuel}")
             except Exception as e:
                 print(f"⚠️ Impossible de sauvegarder l'état actuel: {e}")
 
         # Effectuer la restauration
+        # ⚠️ La base cible est supprimée d'abord, donc shutil.copy2 est sûr ici
+        #    (aucune connexion ouverte sur la nouvelle base). Pour les bases
+        #    en cours d'utilisation, préférer src.backup(dst).
         try:
             if os.path.exists(self.base_problematique):
                 os.remove(self.base_problematique)
@@ -961,15 +1105,17 @@ class GestionnaireRecuperation:
             nb_tables = cursor_verifie.fetchone()[0]
 
             cursor_verifie.execute("PRAGMA integrity_check")
-            integrite = cursor_verifie.fetchone()[0]
+            lignes_integrite = [row[0] for row in cursor_verifie.fetchall()]
 
             conn_verifie.close()
 
-            if integrite == 'ok':
+            if lignes_integrite == ['ok']:
                 print(f"✅ Restauration réussie - {nb_tables} tables restaurées")
                 return True
             else:
-                print(f"❌ Problème après restauration: {integrite}")
+                print(f"❌ {len(lignes_integrite)} problème(s) après restauration :")
+                for ligne in lignes_integrite[:5]:
+                    print(f"   • {ligne}")
                 return False
 
         except Exception as e:
@@ -983,8 +1129,8 @@ print("=== DÉMONSTRATION RÉCUPÉRATION ===")
 base_test = 'test_problematique.db'
 
 # Créer une base de test avec quelques données
-conn_test = sqlite3.connect(base_test)
-cursor_test = conn_test.cursor()
+conn_test = sqlite3.connect(base_test)  
+cursor_test = conn_test.cursor()  
 
 cursor_test.execute('''
     CREATE TABLE test_donnees (
@@ -994,11 +1140,11 @@ cursor_test.execute('''
     )
 ''')
 
-cursor_test.execute("INSERT INTO test_donnees (nom, valeur) VALUES (?, ?)", ("Test1", 100))
-cursor_test.execute("INSERT INTO test_donnees (nom, valeur) VALUES (?, ?)", ("Test2", 200))
+cursor_test.execute("INSERT INTO test_donnees (nom, valeur) VALUES (?, ?)", ("Test1", 100))  
+cursor_test.execute("INSERT INTO test_donnees (nom, valeur) VALUES (?, ?)", ("Test2", 200))  
 
-conn_test.commit()
-conn_test.close()
+conn_test.commit()  
+conn_test.close()  
 
 # Tester le gestionnaire de récupération
 recuperation = GestionnaireRecuperation(base_test)
@@ -1011,12 +1157,12 @@ if not problemes:
     print("\n=== TEST EXPORT DONNÉES ===")
     recuperation.exporter_donnees_recuperables('export_test.db')
 
-# Nettoyage
-try:
-    os.remove(base_test)
-    os.remove('export_test.db')
-except:
-    pass
+# Nettoyage (FileNotFoundError si déjà supprimé, pas besoin de paniquer)
+for f in (base_test, 'export_test.db'):
+    try:
+        os.remove(f)
+    except FileNotFoundError:
+        pass
 ```
 
 ## Récupération point-in-time
@@ -1024,10 +1170,10 @@ except:
 ### Système de journalisation pour récupération temporelle
 
 ```python
-import sqlite3
-import json
-import time
-from datetime import datetime, timedelta
+import sqlite3  
+import json  
+import time  
+from datetime import datetime, timedelta  
 
 class JournalisationPIT:
     """Point-in-Time Recovery pour SQLite"""
@@ -1218,14 +1364,16 @@ class JournalisationPIT:
             conn_verifie = sqlite3.connect(fichier_restauration)
             cursor_verifie = conn_verifie.cursor()
             cursor_verifie.execute("PRAGMA integrity_check")
-            integrite = cursor_verifie.fetchone()[0]
+            lignes_integrite = [row[0] for row in cursor_verifie.fetchall()]
             conn_verifie.close()
 
-            if integrite == 'ok':
+            if lignes_integrite == ['ok']:
                 print("✅ Récupération point-in-time réussie")
                 return True
             else:
-                print(f"❌ Problème d'intégrité: {integrite}")
+                print(f"❌ {len(lignes_integrite)} problème(s) d'intégrité :")
+                for ligne in lignes_integrite[:5]:
+                    print(f"   • {ligne}")
                 return False
 
         except Exception as e:
@@ -1268,9 +1416,9 @@ class JournalisationPIT:
 print("=== DÉMONSTRATION POINT-IN-TIME RECOVERY ===")
 
 # Créer une base de test
-base_test = 'test_pit.db'
-conn = sqlite3.connect(base_test)
-cursor = conn.cursor()
+base_test = 'test_pit.db'  
+conn = sqlite3.connect(base_test)  
+cursor = conn.cursor()  
 
 cursor.execute('''
     CREATE TABLE commandes (
@@ -1301,24 +1449,24 @@ for op, table, avant, apres in transactions_test:
     # Simuler un délai
     time.sleep(0.1)
 
-print(f"\n📋 Checkpoints disponibles:")
-checkpoints = pit.lister_checkpoints()
-for cp in checkpoints:
+print(f"\n📋 Checkpoints disponibles:")  
+checkpoints = pit.lister_checkpoints()  
+for cp in checkpoints:  
     print(f"   • {cp['timestamp']}: {cp['description']}")
 
 # Test de récupération
-timestamp_milieu = datetime.now() - timedelta(seconds=5)
-fichier_recupere = '/tmp/base_recuperee.db'
+timestamp_milieu = datetime.now() - timedelta(seconds=5)  
+fichier_recupere = '/tmp/base_recuperee.db'  
 
 # pit.recuperer_a_instant(timestamp_milieu, fichier_recupere)
 
 conn.close()
 
-# Nettoyage
+# Nettoyage (FileNotFoundError attrapé spécifiquement, pas except: nu)
 try:
     os.remove(base_test)
     # os.remove(fichier_recupere)
-except:
+except FileNotFoundError:
     pass
 
 print("✅ Démonstration PIT terminée")
@@ -1329,11 +1477,11 @@ print("✅ Démonstration PIT terminée")
 ### Suite de tests automatisés
 
 ```python
-import unittest
-import tempfile
-import os
-import sqlite3
-from datetime import datetime, timedelta
+import unittest  
+import tempfile  
+import os  
+import sqlite3  
+from datetime import datetime, timedelta  
 
 class TestSauvegardes(unittest.TestCase):
     def setUp(self):
@@ -1566,17 +1714,48 @@ class TestValidationSauvegardes:
                 if count_orig != count_backup:
                     erreurs.append(f"Table {nom_table}: {count_orig} vs {count_backup} enregistrements")
 
-                # Comparer les sommes de contrôle (checksum) simplifiées
+                # Comparer un checksum colonne par colonne.
+                # ⚠️ `CAST(* AS TEXT)` n'est PAS du SQL valide. On construit
+                #    la requête à partir des colonnes réelles via PRAGMA table_info.
+                #
+                # ⚠️ PIÈGE — `SUM(LENGTH(...))` SEUL est trompeur :
+                #    'Client_1' (8 chars) et 'MODIFIED' (8 chars) ont la même
+                #    longueur → le checksum ne détecte PAS la modification !
+                #    Pour un vrai contrôle, on combine plusieurs agrégats
+                #    (MIN, MAX, SUM, COUNT) qui dépendent du contenu réel.
+                #    L'idéal serait un hash cryptographique (SHA-256), mais
+                #    SQLite n'a pas de fonction de hash native — il faudrait
+                #    charger une extension ou faire le hash côté Python.
                 try:
-                    cursor_orig.execute(f"SELECT COUNT(*), SUM(LENGTH(CAST(* AS TEXT))) FROM '{nom_table}'")
-                    checksum_orig = cursor_orig.fetchone()
+                    cursor_orig.execute(f"PRAGMA table_info('{nom_table}')")
+                    colonnes = [row[1] for row in cursor_orig.fetchall()]
+                    if not colonnes:
+                        continue
 
-                    cursor_backup.execute(f"SELECT COUNT(*), SUM(LENGTH(CAST(* AS TEXT))) FROM '{nom_table}'")
+                    # Combiner COUNT, SUM(LENGTH), MIN, MAX par colonne →
+                    # détecte les modifications de longueur ET de contenu
+                    # (sauf permutations de valeurs, qui restent un cas limite).
+                    agregats = []
+                    for c in colonnes:
+                        col_quote = f'"{c}"'
+                        agregats.extend([
+                            f"SUM(LENGTH(IFNULL(CAST({col_quote} AS TEXT), '')))",
+                            f"MIN(CAST({col_quote} AS TEXT))",
+                            f"MAX(CAST({col_quote} AS TEXT))",
+                        ])
+                    requete_checksum = (
+                        f"SELECT COUNT(*), {', '.join(agregats)} "
+                        f"FROM \"{nom_table}\""
+                    )
+
+                    cursor_orig.execute(requete_checksum)
+                    checksum_orig = cursor_orig.fetchone()
+                    cursor_backup.execute(requete_checksum)
                     checksum_backup = cursor_backup.fetchone()
 
                     if checksum_orig != checksum_backup:
                         erreurs.append(f"Checksum différent pour {nom_table}")
-                except Exception as e:
+                except Exception:
                     # Certaines tables peuvent ne pas supporter cette méthode
                     pass
 
@@ -1799,11 +1978,16 @@ sqlite3 ma_base.db "PRAGMA quick_check;"
 
 ### 2. Sauvegarde d'urgence (< 5 minutes)
 ```bash
-# Copie immédiate (même si risquée)
-cp ma_base.db ma_base.db.URGENCE.$(date +%Y%m%d_%H%M%S)
+# ⚠️ ORDRE IMPORTANT : essayer d'abord la sauvegarde SÛRE (`.backup`).
+#    Le `cp` direct n'est acceptable QUE si la base est inaccessible
+#    (ex : `sqlite3 .backup` échoue avec "database is locked") — dans ce cas
+#    on prend un snapshot "best-effort" pour analyse forensique.
 
-# Sauvegarde sécurisée si la base répond
-sqlite3 ma_base.db ".backup 'ma_base.db.BACKUP_URGENCE.$(date +%Y%m%d_%H%M%S)'"
+# 1. Méthode SÛRE — préférée
+sqlite3 ma_base.db ".backup 'ma_base.db.BACKUP_URGENCE.$(date +%Y%m%d_%H%M%S)'" \
+    || \
+# 2. Fallback `cp` si `.backup` échoue (snapshot potentiellement incohérent)
+cp ma_base.db ma_base.db.URGENCE.$(date +%Y%m%d_%H%M%S)
 ```
 
 ### 3. Diagnostic approfondi (< 10 minutes)
@@ -1811,8 +1995,8 @@ sqlite3 ma_base.db ".backup 'ma_base.db.BACKUP_URGENCE.$(date +%Y%m%d_%H%M%S)'"
 # Utiliser le gestionnaire de récupération
 from gestion_recuperation import GestionnaireRecuperation
 
-recuperation = GestionnaireRecuperation('ma_base.db')
-problemes = recuperation.diagnostiquer_probleme()
+recuperation = GestionnaireRecuperation('ma_base.db')  
+problemes = recuperation.diagnostiquer_probleme()  
 
 if problemes:
     print("🚨 PROBLÈMES DÉTECTÉS:")
@@ -1831,8 +2015,8 @@ sudo systemctl stop mon-application
 cp ma_base.db ma_base.db.CORRUPT.$(date +%Y%m%d_%H%M%S)
 
 # 3. Tentative de réparation
-sqlite3 ma_base.db "VACUUM;"
-sqlite3 ma_base.db "REINDEX;"
+sqlite3 ma_base.db "VACUUM;"  
+sqlite3 ma_base.db "REINDEX;"  
 
 # 4. Vérification
 sqlite3 ma_base.db "PRAGMA integrity_check;"
@@ -1905,14 +2089,14 @@ Script de maintenance automatisé SQLite
 À exécuter quotidiennement via cron
 """
 
-import os
-import sys
-import sqlite3
-import shutil
-import logging
-from datetime import datetime, timedelta
-import argparse
-import json
+import os  
+import sys  
+import sqlite3  
+import shutil  
+import logging  
+from datetime import datetime, timedelta  
+import argparse  
+import json  
 
 class MaintenanceAutomatisee:
     def __init__(self, config_file='maintenance_config.json'):
@@ -1936,10 +2120,26 @@ class MaintenanceAutomatisee:
             }
         }
 
+        def _fusion_profonde(defaut, surcouche):
+            """Fusion récursive : préserve les sous-dictionnaires par défaut
+            que l'utilisateur ne redéfinit pas explicitement."""
+            if not isinstance(surcouche, dict):
+                return surcouche if surcouche is not None else defaut
+            resultat = dict(defaut)
+            for cle, valeur in surcouche.items():
+                if cle in resultat and isinstance(resultat[cle], dict):
+                    resultat[cle] = _fusion_profonde(resultat[cle], valeur)
+                else:
+                    resultat[cle] = valeur
+            return resultat
+
         try:
             with open(config_file, 'r') as f:
-                config_fichier = json.load(f)
-                return {**config_defaut, **config_fichier}
+                config_fichier = json.load(f) or {}
+                # ⚠️ Fusion superficielle = sous-dictionnaires (ex.
+                #    `maintenance_window`) entièrement remplacés au lieu
+                #    d'être complétés. Voir fusion récursive ci-dessus.
+                return _fusion_profonde(config_defaut, config_fichier)
         except FileNotFoundError:
             print(f"⚠️ Config non trouvée, utilisation config par défaut")
             return config_defaut
@@ -2032,22 +2232,32 @@ class MaintenanceAutomatisee:
         return resultats
 
     def _verifier_integrite(self, chemin_base):
-        """Vérifie l'intégrité d'une base"""
+        """Vérifie l'intégrité d'une base (toutes lignes d'integrity_check)"""
         try:
             conn = sqlite3.connect(chemin_base)
             cursor = conn.cursor()
             cursor.execute("PRAGMA integrity_check")
-            resultat = cursor.fetchone()[0]
+            lignes_integrite = [row[0] for row in cursor.fetchall()]
             conn.close()
-            return resultat == 'ok'
+            if lignes_integrite != ['ok']:
+                self.logger.warning(
+                    f"Intégrité KO sur {chemin_base} : "
+                    f"{len(lignes_integrite)} signalement(s) — "
+                    f"premier : {lignes_integrite[0]}"
+                )
+                return False
+            return True
         except Exception as e:
             self.logger.error(f"Erreur vérification intégrité: {e}")
             return False
 
     def _executer_vacuum(self, chemin_base):
-        """Exécute VACUUM sur une base"""
+        """Exécute VACUUM sur une base (mode autocommit obligatoire)"""
         try:
-            conn = sqlite3.connect(chemin_base)
+            # ⚠️ isolation_level=None : VACUUM ne peut PAS s'exécuter dans
+            #    une transaction (ouverte implicitement par le module sqlite3
+            #    en mode par défaut). Sans cela : "cannot VACUUM within a transaction".
+            conn = sqlite3.connect(chemin_base, isolation_level=None)
             conn.execute("VACUUM")
             conn.close()
             return True
@@ -2099,17 +2309,39 @@ class MaintenanceAutomatisee:
             return False
 
     def _nettoyer_fichiers_temporaires(self, chemin_base):
-        """Nettoie les fichiers WAL et SHM associés"""
-        wal_file = f"{chemin_base}-wal"
-        shm_file = f"{chemin_base}-shm"
+        """Effectue un checkpoint WAL pour réduire la taille du journal.
 
-        for fichier in [wal_file, shm_file]:
-            if os.path.exists(fichier):
-                try:
-                    os.remove(fichier)
-                    self.logger.debug(f"🧹 Fichier temporaire supprimé: {fichier}")
-                except Exception as e:
-                    self.logger.warning(f"Impossible de supprimer {fichier}: {e}")
+        ⚠️ DANGER ABSOLU : ne JAMAIS supprimer manuellement les fichiers
+           `-wal` et `-shm`. En mode WAL, le fichier `-wal` contient des
+           transactions COMMITÉES qui n'ont pas encore été appliquées au
+           fichier principal. Le supprimer = perte de données silencieuse.
+
+        La bonne pratique est d'exécuter un checkpoint TRUNCATE qui :
+          - force l'écriture des pages WAL dans le fichier principal,
+          - tronque le fichier `-wal` à zéro octet (mais ne le supprime pas),
+          - laisse SQLite gérer le fichier `-shm` lui-même.
+        """
+        try:
+            conn = sqlite3.connect(chemin_base)
+            cursor = conn.cursor()
+            # Le résultat est (busy, log_pages, checkpointed_pages)
+            busy, log_pages, checkpointed = cursor.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
+            conn.close()
+
+            if busy == 0:
+                self.logger.debug(
+                    f"🧹 Checkpoint WAL effectué sur {chemin_base} "
+                    f"({checkpointed} pages traitées)"
+                )
+            else:
+                self.logger.warning(
+                    f"⚠️ Checkpoint WAL bloqué sur {chemin_base} "
+                    f"(transactions en cours)"
+                )
+        except Exception as e:
+            self.logger.warning(f"Impossible de checkpointer {chemin_base}: {e}")
 
     def nettoyer_anciennes_sauvegardes(self):
         """Supprime les sauvegardes anciennes"""
@@ -2422,8 +2654,8 @@ class Strategie321:
         return conforme_321, resultats
 
 # Exemple d'utilisation
-strategie = Strategie321('ma_base.db')
-conforme, resultats = strategie.implementer_strategie_321()
+strategie = Strategie321('ma_base.db')  
+conforme, resultats = strategie.implementer_strategie_321()  
 ```
 
 ### Checklist finale de déploiement
@@ -2528,16 +2760,16 @@ shutil.copy('base_active.db', 'backup.db')  # Risque de corruption
 # Disque plein à cause des sauvegardes accumulées
 
 # ✅ BONNE PRATIQUE
-conn_source = sqlite3.connect('base_active.db')
-conn_dest = sqlite3.connect('backup.db')
-conn_source.backup(conn_dest)  # API sécurisée
-conn_dest.close()
-conn_source.close()
+conn_source = sqlite3.connect('base_active.db')  
+conn_dest = sqlite3.connect('backup.db')  
+conn_source.backup(conn_dest)  # API sécurisée  
+conn_dest.close()  
+conn_source.close()  
 
 # Toujours vérifier l'intégrité
-conn_test = sqlite3.connect('backup.db')
-cursor_test = conn_test.cursor()
-cursor_test.execute("PRAGMA integrity_check")
+conn_test = sqlite3.connect('backup.db')  
+cursor_test = conn_test.cursor()  
+cursor_test.execute("PRAGMA integrity_check")  
 # ...
 ```
 
@@ -2568,10 +2800,14 @@ metriques_cles = {
 
 ### **📚 Pour aller plus loin**
 
+- **Solutions SQLite spécifiques** :
+  - **[Litestream](https://litestream.io/)** : réplication continue vers S3/Azure/GCS (recommandé)
+  - **[LiteFS](https://fly.io/docs/litefs/)** : FS distribué pour clustering HA
+  - **[Turso](https://turso.tech/) / LibSQL** : SQLite managé avec réplication multi-régions
+  - **[restic](https://restic.net/)** : sauvegarde générique chiffrée et déduplicée
 - **Standards industriels** : ITIL, ISO 27001 pour la gestion des sauvegardes
-- **Outils complémentaires** : Bacula, Amanda, Duplicity pour sauvegardes d'entreprise
-- **Cloud providers** : AWS RDS, Google Cloud SQL pour alternatives managées
-- **Monitoring** : Nagios, Zabbix, Prometheus pour surveillance
+- **Outils complémentaires d'entreprise** : Bacula, Amanda, Duplicity, BorgBackup
+- **Monitoring** : Nagios, Zabbix, Prometheus + Grafana
 
 Les sauvegardes ne sont pas seulement une assurance contre la perte de données - elles sont un élément fondamental de la fiabilité de votre application. Un système de sauvegarde bien conçu et régulièrement testé vous donnera la tranquillité d'esprit nécessaire pour faire évoluer votre application en toute confiance.
 

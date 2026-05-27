@@ -28,9 +28,9 @@ Contrairement aux bases de données serveur comme MySQL ou PostgreSQL qui ont de
 
 ```sql
 -- Ces commandes n'existent PAS dans SQLite :
-CREATE USER 'utilisateur'@'localhost' IDENTIFIED BY 'password';  -- ❌
-GRANT SELECT ON table TO utilisateur;                            -- ❌
-REVOKE INSERT ON table FROM utilisateur;                         -- ❌
+CREATE USER 'utilisateur'@'localhost' IDENTIFIED BY 'password';  -- ❌  
+GRANT SELECT ON table TO utilisateur;                            -- ❌  
+REVOKE INSERT ON table FROM utilisateur;                         -- ❌  
 ```
 
 ### Comment SQLite gère la sécurité
@@ -42,8 +42,8 @@ SQLite s'appuie sur :
 
 ```bash
 # Exemple de permissions au niveau OS
-chmod 600 ma_base.db          # Seul le propriétaire peut lire/écrire
-chmod 644 ma_base.db          # Propriétaire: lecture/écriture, autres: lecture seule
+chmod 600 ma_base.db          # Seul le propriétaire peut lire/écrire  
+chmod 644 ma_base.db          # Propriétaire: lecture/écriture, autres: lecture seule  
 ```
 
 ## Conception d'un système d'authentification
@@ -121,52 +121,149 @@ INSERT INTO permissions (nom, description, table_cible, operation) VALUES
 
 -- Assigner les permissions aux rôles
 -- Admin : toutes les permissions
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id
-FROM roles r, permissions p
-WHERE r.nom = 'admin';
+INSERT INTO role_permissions (role_id, permission_id)  
+SELECT r.id, p.id  
+FROM roles r, permissions p  
+WHERE r.nom = 'admin';  
 
 -- Utilisateur : lecture et modification des données
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id
-FROM roles r, permissions p
-WHERE r.nom = 'utilisateur'
-AND p.nom IN ('lire_donnees', 'modifier_donnees');
+INSERT INTO role_permissions (role_id, permission_id)  
+SELECT r.id, p.id  
+FROM roles r, permissions p  
+WHERE r.nom = 'utilisateur'  
+AND p.nom IN ('lire_donnees', 'modifier_donnees');  
 
 -- Invité : lecture seule
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id
-FROM roles r, permissions p
-WHERE r.nom = 'invite'
-AND p.nom = 'lire_donnees';
+INSERT INTO role_permissions (role_id, permission_id)  
+SELECT r.id, p.id  
+FROM roles r, permissions p  
+WHERE r.nom = 'invite'  
+AND p.nom = 'lire_donnees';  
 ```
 
 ## Implémentation en Python
 
 ### Classe de gestion des utilisateurs
 
+> ⚠️ **Hashage des mots de passe — choisir le bon algorithme** : ce chapitre utilise **PBKDF2** pour rester proche du standard library Python. En 2026, les options recommandées sont :  
+>  
+> 1. **Argon2** (recommandation OWASP 2023+) — `pip install argon2-cffi` :  
+>    ```python  
+>    from argon2 import PasswordHasher  
+>    ph = PasswordHasher()  
+>    hash = ph.hash(mot_de_passe)  
+>    ph.verify(hash, mot_de_passe)   # lève VerifyMismatchError si échec  
+>    ```  
+> 2. **bcrypt** — `pip install bcrypt`, cost factor ≥ 12 en 2026.  
+> 3. **PBKDF2** (option ci-dessous) — si vous voulez rester dans `hashlib` sans dépendance externe. **≥ 600 000 itérations SHA-256** ou **≥ 210 000 SHA-512** selon OWASP 2023.
+
 ```python
-import sqlite3
-import hashlib
-import secrets
-import datetime
-from typing import Optional, List
+import sqlite3  
+import hashlib  
+import secrets  
+import hmac  
+from typing import Optional, List  
 
 class GestionnaireUtilisateurs:
+    # ⚠️ OWASP 2023 : 600 000 itérations minimum pour PBKDF2-HMAC-SHA256.
+    #    Augmentez la valeur tous les 2-3 ans à mesure que le matériel évolue.
+    PBKDF2_ITERATIONS = 600_000
+
     def __init__(self, chemin_base: str):
         self.chemin_base = chemin_base
         self.utilisateur_actuel = None
+        # Créer les tables si elles n'existent pas — rend la classe utilisable
+        # immédiatement sans avoir à lancer manuellement le DDL en amont.
+        self._creer_tables()
+
+    def _creer_tables(self):
+        """Crée le schéma utilisateurs/rôles/permissions si nécessaire."""
+        conn = sqlite3.connect(self.chemin_base)
+        cursor = conn.cursor()
+        cursor.executescript("""
+            CREATE TABLE IF NOT EXISTS utilisateurs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nom_utilisateur TEXT UNIQUE NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                mot_de_passe_hash TEXT NOT NULL,
+                sel TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'utilisateur',
+                actif BOOLEAN DEFAULT 1,
+                date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
+                derniere_connexion DATETIME
+            );
+            CREATE TABLE IF NOT EXISTS roles (
+                id INTEGER PRIMARY KEY,
+                nom TEXT UNIQUE NOT NULL,
+                description TEXT
+            );
+            CREATE TABLE IF NOT EXISTS permissions (
+                id INTEGER PRIMARY KEY,
+                nom TEXT UNIQUE NOT NULL,
+                description TEXT,
+                table_cible TEXT,
+                operation TEXT
+            );
+            CREATE TABLE IF NOT EXISTS role_permissions (
+                role_id INTEGER,
+                permission_id INTEGER,
+                PRIMARY KEY (role_id, permission_id),
+                FOREIGN KEY (role_id) REFERENCES roles(id),
+                FOREIGN KEY (permission_id) REFERENCES permissions(id)
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                utilisateur_id INTEGER NOT NULL,
+                date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
+                date_expiration DATETIME NOT NULL,
+                adresse_ip TEXT,
+                FOREIGN KEY (utilisateur_id) REFERENCES utilisateurs(id)
+            );
+        """)
+        # Pré-charger les rôles + permissions de base (idempotent grâce à OR IGNORE)
+        cursor.executescript("""
+            INSERT OR IGNORE INTO roles (nom, description) VALUES
+                ('admin', 'Administrateur - accès complet'),
+                ('utilisateur', 'Utilisateur standard - accès limité'),
+                ('invite', 'Invité - lecture seule');
+            INSERT OR IGNORE INTO permissions (nom, description, table_cible, operation) VALUES
+                ('lire_tous_utilisateurs', 'Peut voir tous les utilisateurs', 'utilisateurs', 'SELECT'),
+                ('modifier_utilisateurs', 'Peut modifier les utilisateurs', 'utilisateurs', 'UPDATE'),
+                ('supprimer_utilisateurs', 'Peut supprimer des utilisateurs', 'utilisateurs', 'DELETE'),
+                ('lire_donnees', 'Peut lire les données métier', '*', 'SELECT'),
+                ('modifier_donnees', 'Peut modifier les données métier', '*', 'UPDATE');
+        """)
+        # Mapping rôles → permissions (idempotent)
+        cursor.execute("""
+            INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+            SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
+            WHERE r.nom = 'admin'
+        """)
+        cursor.execute("""
+            INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+            SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
+            WHERE r.nom = 'utilisateur' AND p.nom IN ('lire_donnees', 'modifier_donnees')
+        """)
+        cursor.execute("""
+            INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+            SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
+            WHERE r.nom = 'invite' AND p.nom = 'lire_donnees'
+        """)
+        conn.commit()
+        conn.close()
 
     def _generer_sel(self) -> str:
         """Génère un sel aléatoire pour sécuriser le mot de passe"""
         return secrets.token_hex(32)
 
     def _hasher_mot_de_passe(self, mot_de_passe: str, sel: str) -> str:
-        """Hash un mot de passe avec un sel"""
-        return hashlib.pbkdf2_hmac('sha256',
-                                   mot_de_passe.encode('utf-8'),
-                                   sel.encode('utf-8'),
-                                   100000).hex()
+        """Hash un mot de passe avec un sel via PBKDF2 (OWASP 2023 : 600 000 iter)"""
+        return hashlib.pbkdf2_hmac(
+            'sha256',
+            mot_de_passe.encode('utf-8'),
+            sel.encode('utf-8'),
+            self.PBKDF2_ITERATIONS
+        ).hex()
 
     def creer_utilisateur(self, nom_utilisateur: str, email: str,
                          mot_de_passe: str, role: str = 'utilisateur') -> bool:
@@ -227,9 +324,11 @@ class GestionnaireUtilisateurs:
                 print("❌ Compte désactivé")
                 return False
 
-            # Vérifier le mot de passe
+            # Vérifier le mot de passe — comparaison à temps constant (hmac.compare_digest)
+            # ⚠️ NE PAS utiliser `hash1 != hash2` direct : vulnérable aux timing attacks
+            #    (un attaquant peut deviner le hash octet par octet via le temps de réponse).
             mot_de_passe_hash = self._hasher_mot_de_passe(mot_de_passe, sel)
-            if mot_de_passe_hash != mot_de_passe_stocke:
+            if not hmac.compare_digest(mot_de_passe_hash, mot_de_passe_stocke):
                 print("❌ Mot de passe incorrect")
                 return False
 
@@ -322,9 +421,9 @@ class GestionnaireUtilisateurs:
 gestionnaire = GestionnaireUtilisateurs('ma_base.db')
 
 # Créer des utilisateurs de test
-gestionnaire.creer_utilisateur('admin', 'admin@email.com', 'password123', 'admin')
-gestionnaire.creer_utilisateur('alice', 'alice@email.com', 'motdepasse456', 'utilisateur')
-gestionnaire.creer_utilisateur('bob', 'bob@email.com', 'secret789', 'invite')
+gestionnaire.creer_utilisateur('admin', 'admin@email.com', 'password123', 'admin')  
+gestionnaire.creer_utilisateur('alice', 'alice@email.com', 'motdepasse456', 'utilisateur')  
+gestionnaire.creer_utilisateur('bob', 'bob@email.com', 'secret789', 'invite')  
 
 # Test d'authentification
 if gestionnaire.authentifier('alice', 'motdepasse456'):
@@ -436,9 +535,47 @@ if app.gestionnaire_utilisateurs.authentifier('alice', 'motdepasse456'):
 
 ### Système de sessions
 
+> ⚠️ **Deux pièges Python ↔ SQLite à régler dès le démarrage**  
+>  
+> **Piège 1 — DeprecationWarning Python 3.12+** : passer un `datetime` directement à `cursor.execute()` est déprécié et sera retiré dans une future version.  
+>  
+> **Piège 2 — Confusion local time / UTC (BUG SILENCIEUX !)** : `CURRENT_TIMESTAMP` SQLite est **toujours en UTC**, alors que `datetime.now()` retourne **l'heure locale**. Sur un système en UTC+2, un filtre `WHERE timestamp > datetime.now() - timedelta(hours=1)` ne trouve **rien** car le timestamp UTC est inférieur de 2h à l'heure locale calculée. Les rapports d'audit/sauvegarde retournent silencieusement de **mauvais résultats** sans erreur.  
+>  
+> **Solution recommandée — un adapter qui normalise en UTC** (à enregistrer **une seule fois** au démarrage) :  
+> ```python  
+> import sqlite3  
+> from datetime import datetime, timezone  
+>  
+> def _datetime_vers_iso_utc(d: datetime) -> str:  
+>     """Convertit datetime → "YYYY-MM-DD HH:MM:SS" en UTC (compatible CURRENT_TIMESTAMP)"""  
+>     if d.tzinfo is None:  
+>         # datetime naïf supposé local → on l'attache au fuseau local puis convertit en UTC  
+>         d = d.astimezone(timezone.utc)  
+>     else:  
+>         d = d.astimezone(timezone.utc)  
+>     return d.strftime("%Y-%m-%d %H:%M:%S")  
+>  
+> sqlite3.register_adapter(datetime, _datetime_vers_iso_utc)  
+> ```  
+>  
+> Toutes les classes ci-dessous supposent cet adapter enregistré. Autre option côté SQL : remplacer `WHERE timestamp > ?` (param Python) par `WHERE timestamp > datetime('now', '-1 hour')` (calcul côté SQLite, déjà en UTC).
+
 ```python
-import uuid
-from datetime import datetime, timedelta
+import uuid  
+import sqlite3  
+from datetime import datetime, timedelta  
+from typing import Optional  
+
+# Adapter datetime obligatoire en Python 3.12+ ET normalisation UTC
+# (cf. encadré ci-dessus pour les deux pièges)
+from datetime import timezone  
+def _adapter_dt(d):  
+    if d.tzinfo is None:
+        d = d.astimezone(timezone.utc)
+    else:
+        d = d.astimezone(timezone.utc)
+    return d.strftime("%Y-%m-%d %H:%M:%S")
+sqlite3.register_adapter(datetime, _adapter_dt)
 
 class GestionnaireSession:
     def __init__(self, chemin_base: str):
@@ -530,8 +667,8 @@ class GestionnaireSession:
 """
 from flask import Flask, request, session, jsonify
 
-app = Flask(__name__)
-gestionnaire_session = GestionnaireSession('ma_base.db')
+app = Flask(__name__)  
+gestionnaire_session = GestionnaireSession('ma_base.db')  
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -629,22 +766,46 @@ class AccesSecurise:
 
 ### Vues avec sécurité intégrée
 
+> ⚠️ **`current_user()` n'existe PAS en SQLite** (c'est une fonction PostgreSQL/MySQL). En SQLite, il n'y a pas de notion d'« utilisateur courant » de la base — toute notion d'utilisateur doit être gérée par l'application. Deux approches :  
+>  
+> 1. **Filtrer côté application** : la requête passe l'ID utilisateur en paramètre lié.  
+> 2. **Injecter l'ID via une variable globale** : utiliser une UDF Python qui retourne l'ID utilisateur courant, ou un PRAGMA personnalisé. La table temporaire `temp.session` ci-dessous est portable :
+
 ```sql
--- Vue pour utilisateurs normaux (seulement leurs données)
-CREATE VIEW mes_commandes AS
-SELECT c.id, c.date_commande, c.total, c.statut
-FROM commandes c
-WHERE c.client_id = (
-    -- Cette partie devrait être remplacée par l'ID de l'utilisateur connecté
-    SELECT id FROM utilisateurs WHERE nom_utilisateur = current_user()
+-- ✅ Approche portable : passer l'ID utilisateur via une table temp
+-- (créée par l'application juste après authentification)
+CREATE TEMP TABLE IF NOT EXISTS session_courante (
+    utilisateur_id INTEGER
 );
+-- L'application fait : INSERT INTO temp.session_courante VALUES (?)
+
+-- Vue pour utilisateurs normaux (seulement leurs données)
+CREATE VIEW mes_commandes AS  
+SELECT c.id, c.date_commande, c.total, c.statut  
+FROM commandes c  
+WHERE c.client_id = (SELECT utilisateur_id FROM temp.session_courante);  
 
 -- Vue pour admins (toutes les données)
-CREATE VIEW toutes_commandes AS
-SELECT c.id, c.date_commande, c.total, c.statut,
+CREATE VIEW toutes_commandes AS  
+SELECT c.id, c.date_commande, c.total, c.statut,  
        u.nom_utilisateur as client
-FROM commandes c
-JOIN utilisateurs u ON c.client_id = u.id;
+FROM commandes c  
+JOIN utilisateurs u ON c.client_id = u.id;  
+```
+
+```python
+# ✅ Alternative idiomatique : passer l'ID en paramètre (le plus simple)
+def lire_mes_commandes(conn, user_id):
+    return conn.execute(
+        """SELECT id, date_commande, total, statut
+           FROM commandes WHERE client_id = ?""",
+        (user_id,)
+    ).fetchall()
+
+# ✅ Alternative avec UDF : déclarer une fonction current_user en Python
+def make_current_user_udf(conn, user_id):
+    conn.create_function("current_user_id", 0, lambda: user_id, deterministic=False)
+    # Maintenant utilisable en SQL : SELECT * FROM commandes WHERE client_id = current_user_id()
 ```
 
 ## Audit et logging des accès
@@ -652,8 +813,8 @@ JOIN utilisateurs u ON c.client_id = u.id;
 ### Système d'audit
 
 ```python
-import json
-from datetime import datetime
+import json  
+from datetime import datetime  
 
 class AuditLogger:
     def __init__(self, chemin_base):
@@ -829,12 +990,12 @@ class RequeteSecurisee:
 recherche = RequeteSecurisee('ma_base.db')
 
 # Test normal
-resultats = recherche.rechercher_utilisateurs_securise('alice')
-print("Résultats normaux :", resultats)
+resultats = recherche.rechercher_utilisateurs_securise('alice')  
+print("Résultats normaux :", resultats)  
 
 # Test d'injection (sera bloqué avec la méthode sécurisée)
-terme_malveillant = "'; DROP TABLE utilisateurs; --"
-try:
+terme_malveillant = "'; DROP TABLE utilisateurs; --"  
+try:  
     # Avec la méthode sécurisée, ceci sera traité comme un terme de recherche normal
     resultats = recherche.rechercher_utilisateurs_securise(terme_malveillant)
     print("✅ Injection bloquée, recherche traitée normalement")
@@ -845,8 +1006,8 @@ except Exception as e:
 ### Validation et assainissement des entrées
 
 ```python
-import re
-from typing import Union
+import re  
+from typing import Union  
 
 class ValidateurEntrees:
     @staticmethod
@@ -863,37 +1024,53 @@ class ValidateurEntrees:
 
     @staticmethod
     def valider_mot_de_passe(mot_de_passe: str) -> tuple[bool, str]:
-        """Valide un mot de passe et retourne le résultat + message"""
+        """
+        Valide un mot de passe selon les recommandations NIST SP 800-63B (2017+).
+
+        ⚠️ Les règles "majuscule + minuscule + chiffre + caractère spécial" sont
+        DÉCONSEILLÉES par NIST depuis 2017 : elles poussent les utilisateurs à
+        des patterns prévisibles ("Password1!"). À la place :
+          1. Longueur ≥ 8 (12 idéal), max 64+ (autorise les phrases de passe)
+          2. Vérifier contre une liste de mots de passe compromis (HaveIBeenPwned)
+          3. Refuser uniquement les patterns vraiment triviaux
+        """
         if len(mot_de_passe) < 8:
             return False, "Le mot de passe doit contenir au moins 8 caractères"
 
-        if not re.search(r'[A-Z]', mot_de_passe):
-            return False, "Le mot de passe doit contenir au moins une majuscule"
+        if len(mot_de_passe) > 128:
+            return False, "Le mot de passe ne doit pas dépasser 128 caractères"
 
-        if not re.search(r'[a-z]', mot_de_passe):
-            return False, "Le mot de passe doit contenir au moins une minuscule"
+        # Bannir uniquement les mots de passe vraiment triviaux
+        triviaux = {'password', '12345678', 'qwerty123', 'azerty123',
+                    'motdepasse', 'admin123', 'letmein123'}
+        if mot_de_passe.lower() in triviaux:
+            return False, "Ce mot de passe est trop commun"
 
-        if not re.search(r'\d', mot_de_passe):
-            return False, "Le mot de passe doit contenir au moins un chiffre"
-
-        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', mot_de_passe):
-            return False, "Le mot de passe doit contenir au moins un caractère spécial"
+        # En production, vérifier aussi contre HaveIBeenPwned via k-anonymity :
+        #   sha1_prefix = hashlib.sha1(mot_de_passe.encode()).hexdigest()[:5]
+        #   r = requests.get(f"https://api.pwnedpasswords.com/range/{sha1_prefix}")
+        #   # ne télécharge que ~800 hashes, pas le mot de passe en clair
 
         return True, "Mot de passe valide"
 
     @staticmethod
     def assainir_entree(texte: str, max_longueur: int = 255) -> str:
-        """Assainit une entrée texte"""
+        """
+        Limite la longueur et normalise les espaces d'une entrée texte.
+
+        ⚠️ NE PAS confondre avec une protection anti-injection SQL : c'est
+        l'utilisation de **paramètres préparés** (`?`) qui empêche l'injection,
+        PAS le filtrage de caractères. Le "sanitization à l'entrée" via blacklist
+        est un antipattern OWASP — préférer "encoder à la sortie" (HTML escape,
+        etc.). Cette fonction sert uniquement à normaliser, pas à sécuriser.
+        """
         if not isinstance(texte, str):
             texte = str(texte)
 
-        # Supprimer les caractères dangereux
-        texte = re.sub(r'[<>"\';\\]', '', texte)
-
-        # Limiter la longueur
+        # Limiter la longueur (protection contre des inputs énormes)
         texte = texte[:max_longueur]
 
-        # Supprimer les espaces en début/fin
+        # Normaliser les espaces (sans toucher au contenu)
         texte = texte.strip()
 
         return texte
@@ -953,11 +1130,32 @@ for nom, email, mdp, role in test_cases:
 ### Système de limitation des tentatives
 
 ```python
-import time
-from collections import defaultdict
-from datetime import datetime, timedelta
+import time  
+from collections import defaultdict  
+from datetime import datetime, timedelta  
 
 class ProtectionForceBrute:
+    """
+    ⚠️ LIMITATIONS À CONNAÎTRE :
+
+    1. **Stockage en mémoire** : `self.tentatives` et `self.comptes_bloques`
+       sont des dictionnaires Python. Ils disparaissent au redémarrage du
+       processus. En production, il faut soit :
+         - Persister les blocages dans la base (`UPDATE utilisateurs SET
+           bloque_jusqua=?`)
+         - Utiliser Redis/Memcached pour partager entre processus
+
+    2. **Multi-processus** : si l'application tourne avec plusieurs workers
+       (gunicorn, uvicorn --workers N), chaque worker a son propre dict
+       en mémoire → les compteurs ne sont PAS partagés. Encore plus de
+       raison de passer sur Redis ou la base.
+
+    3. **Limites par IP vs limites par compte** : ici on bloque les deux
+       (≥5 tentatives par IP, ≥3 échecs par compte). Le seuil IP est plus
+       élevé pour ne pas bloquer un proxy/NAT légitime. Adapter selon
+       votre contexte (mobile = NAT carrier = beaucoup d'IPs partagées).
+    """
+
     def __init__(self, chemin_base: str):
         self.chemin_base = chemin_base
         self.tentatives = defaultdict(list)  # IP -> liste des tentatives
@@ -1104,9 +1302,9 @@ for i in range(5):
     time.sleep(0.1)  # Petite pause pour simuler des tentatives espacées
 
 # Tenter avec le bon mot de passe après les échecs
-print("\nTentative avec le bon mot de passe...")
-resultat = gestionnaire_protege.authentifier('test_user', 'MotDePasse123!', '192.168.1.100')
-if resultat:
+print("\nTentative avec le bon mot de passe...")  
+resultat = gestionnaire_protege.authentifier('test_user', 'MotDePasse123!', '192.168.1.100')  
+if resultat:  
     print("✅ Connexion réussie")
 else:
     print("❌ Connexion bloquée malgré le bon mot de passe")
@@ -1117,8 +1315,8 @@ else:
 ### Système ABAC avancé
 
 ```python
-from datetime import datetime, time
-import json
+from datetime import datetime, time  
+import json  
 
 class ControleurAccesABAC:
     def __init__(self, chemin_base: str):
@@ -1351,13 +1549,13 @@ class ControleurAccesABAC:
 controleur_abac = ControleurAccesABAC('ma_base.db')
 
 # Définir des attributs utilisateur
-controleur_abac.definir_attribut_utilisateur(1, 'departement', 'IT')
-controleur_abac.definir_attribut_utilisateur(1, 'niveau_clearance', '3')
-controleur_abac.definir_attribut_utilisateur(1, 'anciennete_annees', '5')
+controleur_abac.definir_attribut_utilisateur(1, 'departement', 'IT')  
+controleur_abac.definir_attribut_utilisateur(1, 'niveau_clearance', '3')  
+controleur_abac.definir_attribut_utilisateur(1, 'anciennete_annees', '5')  
 
 # Définir des attributs de ressource
-controleur_abac.definir_attribut_ressource('document', 1, 'classification', 'confidentiel')
-controleur_abac.definir_attribut_ressource('document', 1, 'departement_proprietaire', 'IT')
+controleur_abac.definir_attribut_ressource('document', 1, 'classification', 'confidentiel')  
+controleur_abac.definir_attribut_ressource('document', 1, 'departement_proprietaire', 'IT')  
 
 # Créer une politique d'accès
 politique_it_confidentiel = {
@@ -1382,8 +1580,8 @@ controleur_abac.creer_politique(
 )
 
 # Tester l'accès
-utilisateur_id = 1
-autorise = controleur_abac.evaluer_acces(utilisateur_id, 'read', 'document', 1)
+utilisateur_id = 1  
+autorise = controleur_abac.evaluer_acces(utilisateur_id, 'read', 'document', 1)  
 
 if autorise:
     print("✅ Accès autorisé au document")
@@ -1396,15 +1594,24 @@ else:
 ### Exemple avec Flask
 
 ```python
-from flask import Flask, request, jsonify, session
-from functools import wraps
+from flask import Flask, request, jsonify, session  
+from functools import wraps  
 
 app = Flask(__name__)
-app.secret_key = 'votre-cle-secrete-tres-longue-et-complexe'
+# ⚠️ JAMAIS de secret_key en dur dans le code source. Si elle fuit (Git,
+#    logs, build CI), un attaquant peut FORGER des sessions valides.
+#    Toujours via variable d'environnement (ou Vault / Secrets Manager).
+import os  
+app.secret_key = os.environ.get('FLASK_SECRET_KEY')  
+if not app.secret_key:  
+    raise RuntimeError(
+        "FLASK_SECRET_KEY non définie. Générez-la avec :\n"
+        "  python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
 
 # Initialisation des gestionnaires
-gestionnaire = GestionnaireUtilisateursProtege('ma_base.db')
-controleur_abac = ControleurAccesABAC('ma_base.db')
+gestionnaire = GestionnaireUtilisateursProtege('ma_base.db')  
+controleur_abac = ControleurAccesABAC('ma_base.db')  
 
 def connexion_requise(f):
     """Décorateur pour vérifier la connexion"""
@@ -1527,7 +1734,7 @@ class ChecklistSecurite:
         resultats = {
             'chiffrement': self._verifier_chiffrement(),
             'permissions_fichier': self._verifier_permissions_fichier(),
-            'utilisateurs_faibles': self._detecter_mots_de_passe_faibles(),
+            'comptes_recents_a_examiner': self._detecter_comptes_recents(),
             'comptes_inactifs': self._detecter_comptes_inactifs(),
             'tentatives_suspectes': self._analyser_tentatives_connexion(),
             'integrite': self._verifier_integrite()
@@ -1585,15 +1792,23 @@ class ChecklistSecurite:
                 'recommandation': 'Vérifier le chemin de la base de données'
             }
 
-    def _detecter_mots_de_passe_faibles(self):
-        """Détecte les utilisateurs avec des mots de passe potentiellement faibles"""
+    def _detecter_comptes_recents(self):
+        """Liste les comptes créés récemment (à examiner manuellement).
+
+        ⚠️ Note pédagogique importante : on NE PEUT PAS détecter directement
+        un « mot de passe faible » depuis la base parce que seul son hash y
+        est stocké (et c'est le but du hashage). Cette fonction ne fait que
+        signaler les comptes neufs sur lesquels il faut vérifier manuellement
+        que la politique de mots de passe a bien été appliquée à la création.
+        Pour une vraie détection de mots de passe compromis, comparer les
+        hashes à des bases publiques fuitées (HaveIBeenPwned, etc.) — mais
+        en pratique, on impose une politique forte À LA CRÉATION plutôt que
+        d'auditer après coup.
+        """
         try:
             conn = sqlite3.connect(self.chemin_base)
             cursor = conn.cursor()
 
-            # Rechercher des patterns de mots de passe faibles
-            # Note: on ne peut pas voir les mots de passe en clair, mais on peut détecter
-            # des comptes créés récemment ou avec des patterns suspects
             cursor.execute("""
                 SELECT nom_utilisateur, date_creation
                 FROM utilisateurs
@@ -1606,14 +1821,14 @@ class ChecklistSecurite:
             if comptes_recents:
                 return {
                     'statut': '⚠️ ATTENTION',
-                    'message': f'{len(comptes_recents)} comptes créés récemment',
-                    'recommandation': 'Vérifier que ces comptes utilisent des mots de passe forts',
+                    'message': f'{len(comptes_recents)} comptes créés ces 7 derniers jours',
+                    'recommandation': 'Vérifier manuellement que ces comptes respectent la politique de mots de passe',
                     'details': comptes_recents
                 }
             else:
                 return {
                     'statut': '✅ OK',
-                    'message': 'Aucun compte récent détecté',
+                    'message': 'Aucun compte récent à examiner',
                     'recommandation': 'Continuer à appliquer une politique de mots de passe forts'
                 }
         except sqlite3.Error as e:
@@ -1700,25 +1915,31 @@ class ChecklistSecurite:
             }
 
     def _verifier_integrite(self):
-        """Vérifie l'intégrité de la base de données"""
+        """Vérifie l'intégrité de la base de données.
+
+        ⚠️ PRAGMA integrity_check peut renvoyer plusieurs lignes en cas de
+        corruption multiple. fetchall() obligatoire pour ne pas masquer des
+        problèmes secondaires.
+        """
         try:
             conn = sqlite3.connect(self.chemin_base)
             cursor = conn.cursor()
 
             cursor.execute("PRAGMA integrity_check")
-            resultat = cursor.fetchone()[0]
+            lignes = [row[0] for row in cursor.fetchall()]
             conn.close()
 
-            if resultat == 'ok':
+            if lignes == ['ok']:
                 return {
                     'statut': '✅ OK',
                     'message': 'Intégrité de la base de données vérifiée',
                     'recommandation': 'Effectuer des vérifications régulières'
                 }
             else:
+                premier = lignes[0] if lignes else 'aucun résultat'
                 return {
                     'statut': '❌ CRITIQUE',
-                    'message': f'Problème d\'intégrité détecté: {resultat}',
+                    'message': f"Problème d'intégrité détecté ({len(lignes)} signalement(s)) : {premier}",
                     'recommandation': 'Restaurer depuis une sauvegarde ou réparer la base'
                 }
         except sqlite3.Error as e:
@@ -1764,8 +1985,8 @@ class ChecklistSecurite:
             print("🔴 Niveau de sécurité: INSUFFISANT (actions urgentes requises)")
 
 # Utilisation de l'audit de sécurité
-auditeur = ChecklistSecurite('ma_base.db')
-auditeur.audit_complet()
+auditeur = ChecklistSecurite('ma_base.db')  
+auditeur.audit_complet()  
 ```
 
 ## Guide de déploiement sécurisé
@@ -1868,8 +2089,8 @@ class ConfigurationProduction:
 # Script de surveillance SQLite - {chemin_base}
 
 # Vérifier la taille du fichier
-taille=$(stat -f%z "{chemin_base}" 2>/dev/null || stat -c%s "{chemin_base}" 2>/dev/null)
-echo "$(date): Taille base de données: $taille bytes" >> /var/log/sqlite_monitoring.log
+taille=$(stat -f%z "{chemin_base}" 2>/dev/null || stat -c%s "{chemin_base}" 2>/dev/null)  
+echo "$(date): Taille base de données: $taille bytes" >> /var/log/sqlite_monitoring.log  
 
 # Vérifier l'intégrité (une fois par jour)
 if [ $(date +%H) -eq 2 ]; then
@@ -1900,10 +2121,10 @@ fi
         script_backup = f"""#!/bin/bash
 # Script de sauvegarde SQLite automatique
 
-BACKUP_DIR="/backup/sqlite"
-DB_PATH="{chemin_base}"
-DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_FILE="$BACKUP_DIR/backup_$DATE.db"
+BACKUP_DIR="/backup/sqlite"  
+DB_PATH="{chemin_base}"  
+DATE=$(date +%Y%m%d_%H%M%S)  
+BACKUP_FILE="$BACKUP_DIR/backup_$DATE.db"  
 
 # Créer le répertoire de sauvegarde si nécessaire
 mkdir -p "$BACKUP_DIR"
@@ -1951,11 +2172,18 @@ fi
                 "max_login_attempts": 3,
                 "session_timeout_minutes": 30,
                 "password_policy": {
-                    "min_length": 8,
-                    "require_uppercase": True,
-                    "require_lowercase": True,
-                    "require_digits": True,
-                    "require_special_chars": True
+                    # Recommandations NIST SP 800-63B (2017+) — abandonner les
+                    # règles de complexité forcée au profit de la longueur et de
+                    # la vérification contre les listes de mots de passe compromis.
+                    "min_length": 12,
+                    "max_length": 128,
+                    "check_haveibeenpwned": True,
+                    # Les anciennes règles (require_uppercase, etc.) sont
+                    # OBSOLÈTES selon NIST → ne plus les utiliser.
+                },
+                "password_hashing": {
+                    "algorithm": "argon2",       # ou "bcrypt" ou "pbkdf2-sha256"
+                    "pbkdf2_iterations": 600000  # si pbkdf2-sha256 (OWASP 2023)
                 }
             },
             "performance": {
@@ -1997,8 +2225,8 @@ fi
         print("- Former l'équipe aux bonnes pratiques de sécurité SQLite")
 
 # Utilisation du configurateur de production
-configurateur = ConfigurationProduction()
-configurateur.configurer_environnement_securise('ma_base.db', 'config_production.json')
+configurateur = ConfigurationProduction()  
+configurateur.configurer_environnement_securise('ma_base.db', 'config_production.json')  
 ```
 
 ## Tests de sécurité et validation
@@ -2006,9 +2234,9 @@ configurateur.configurer_environnement_securise('ma_base.db', 'config_production
 ### Suite de tests de sécurité
 
 ```python
-import unittest
-import tempfile
-import os
+import unittest  
+import tempfile  
+import os  
 
 class TestsSecuriteSQLite(unittest.TestCase):
     def setUp(self):
@@ -2349,10 +2577,10 @@ class DiagnosticSecurite:
 diagnostic = DiagnosticSecurite('ma_base.db')
 
 # Exemples d'utilisation
-print("=== EXEMPLES DE DIAGNOSTIC ===")
-diagnostic.diagnostiquer_probleme_connexion('alice', ["mot de passe incorrect"])
-print()
-diagnostic.diagnostiquer_probleme_connexion('bob', ["compte bloqué"])
+print("=== EXEMPLES DE DIAGNOSTIC ===")  
+diagnostic.diagnostiquer_probleme_connexion('alice', ["mot de passe incorrect"])  
+print()  
+diagnostic.diagnostiquer_probleme_connexion('bob', ["compte bloqué"])  
 ```
 
 ### Scripts d'urgence
@@ -2420,14 +2648,17 @@ class OutilsUrgence:
             conn = sqlite3.connect(self.chemin_base)
             cursor = conn.cursor()
 
-            # Générer nouveau hash
+            # Générer nouveau hash — ⚠️ 600 000 itérations (OWASP 2023+),
+            # cohérent avec GestionnaireUtilisateurs.PBKDF2_ITERATIONS
             import secrets
             import hashlib
             sel = secrets.token_hex(32)
-            nouveau_hash = hashlib.pbkdf2_hmac('sha256',
-                                              nouveau_mot_de_passe.encode('utf-8'),
-                                              sel.encode('utf-8'),
-                                              100000).hex()
+            nouveau_hash = hashlib.pbkdf2_hmac(
+                'sha256',
+                nouveau_mot_de_passe.encode('utf-8'),
+                sel.encode('utf-8'),
+                600_000
+            ).hex()
 
             cursor.execute("""
                 UPDATE utilisateurs
@@ -2447,17 +2678,25 @@ class OutilsUrgence:
             return False
 
     def sauvegarder_urgence(self):
-        """Effectue une sauvegarde d'urgence"""
+        """
+        Effectue une sauvegarde d'urgence sûre, même si la base est utilisée.
+
+        ⚠️ NE PAS utiliser `shutil.copy` ou `cp` : si une transaction est en
+        cours, la copie peut être incohérente. L'API `Connection.backup()` de
+        SQLite copie page par page de façon transactionnellement sûre.
+        """
         print("💾 SAUVEGARDE D'URGENCE")
 
-        import shutil
         from datetime import datetime
+        from contextlib import closing
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         backup_path = f"{self.chemin_base}.emergency_backup_{timestamp}"
 
         try:
-            shutil.copy2(self.chemin_base, backup_path)
+            with closing(sqlite3.connect(self.chemin_base)) as src, \
+                 closing(sqlite3.connect(backup_path)) as dst:
+                src.backup(dst)
             print(f"✅ Sauvegarde d'urgence créée: {backup_path}")
             return backup_path
         except Exception as e:
@@ -2470,14 +2709,16 @@ class OutilsUrgence:
 
         problemes_critiques = []
 
-        # Vérifier l'intégrité
+        # Vérifier l'intégrité (fetchall : capture toutes les corruptions)
         try:
             conn = sqlite3.connect(self.chemin_base)
             cursor = conn.cursor()
             cursor.execute("PRAGMA integrity_check")
-            integrite = cursor.fetchone()[0]
-            if integrite != 'ok':
-                problemes_critiques.append(f"Intégrité compromise: {integrite}")
+            lignes = [row[0] for row in cursor.fetchall()]
+            if lignes != ['ok']:
+                problemes_critiques.append(
+                    f"Intégrité compromise ({len(lignes)} signalement(s)) : {lignes[0]}"
+                )
             conn.close()
         except Exception as e:
             problemes_critiques.append(f"Erreur accès base: {e}")
@@ -2522,8 +2763,8 @@ class OutilsUrgence:
 outils_urgence = OutilsUrgence('ma_base.db')
 
 # Exemple d'utilisation en urgence
-print("🚨 === PROCÉDURES D'URGENCE ===")
-outils_urgence.analyser_securite_rapide()
+print("🚨 === PROCÉDURES D'URGENCE ===")  
+outils_urgence.analyser_securite_rapide()  
 ```
 
 ### Documentation de référence rapide
@@ -2537,24 +2778,25 @@ outils_urgence.analyser_securite_rapide()
 sqlite3 ma_base.db "PRAGMA integrity_check;"
 
 # 2. Vérifier les permissions fichier
-ls -la ma_base.db
-stat ma_base.db
+ls -la ma_base.db  
+stat ma_base.db  
 
 # 3. Tester la connexion basique
 sqlite3 ma_base.db ".tables"
 
 # 4. Vérifier si la base est chiffrée
-file ma_base.db
-hexdump -C ma_base.db | head -1
+file ma_base.db  
+hexdump -C ma_base.db | head -1  
 
 # === CORRECTIONS RAPIDES ===
 
 # 1. Corriger les permissions
-chmod 600 ma_base.db
-chown monapp:monapp ma_base.db
+chmod 600 ma_base.db  
+chown monapp:monapp ma_base.db  
 
-# 2. Sauvegarde d'urgence
-cp ma_base.db ma_base.db.backup.$(date +%Y%m%d_%H%M%S)
+# 2. Sauvegarde d'urgence — ⚠️ utiliser `.backup` et non `cp` qui peut
+#    corrompre une base en cours d'utilisation (transaction en vol).
+sqlite3 ma_base.db ".backup 'ma_base.db.backup.$(date +%Y%m%d_%H%M%S)'"
 
 # 3. Nettoyer les logs de tentatives (si trop volumineux)
 sqlite3 ma_base.db "DELETE FROM tentatives_connexion WHERE timestamp < datetime('now', '-7 days');"
@@ -2571,24 +2813,24 @@ sqlite3 ma_base.db "VACUUM; REINDEX; PRAGMA optimize;"
 -- 1. Comptes inactifs (plus de 90 jours)
 SELECT nom_utilisateur, derniere_connexion,
        julianday('now') - julianday(derniere_connexion) as jours_inactivite
-FROM utilisateurs
-WHERE derniere_connexion < datetime('now', '-90 days')
+FROM utilisateurs  
+WHERE derniere_connexion < datetime('now', '-90 days')  
    OR derniere_connexion IS NULL;
 
 -- 2. Tentatives de connexion suspectes (dernières 24h)
 SELECT adresse_ip, nom_utilisateur, COUNT(*) as tentatives,
        SUM(CASE WHEN succes = 0 THEN 1 ELSE 0 END) as echecs
-FROM tentatives_connexion
-WHERE timestamp > datetime('now', '-1 day')
-GROUP BY adresse_ip, nom_utilisateur
-HAVING echecs > 3
-ORDER BY echecs DESC;
+FROM tentatives_connexion  
+WHERE timestamp > datetime('now', '-1 day')  
+GROUP BY adresse_ip, nom_utilisateur  
+HAVING echecs > 3  
+ORDER BY echecs DESC;  
 
 -- 3. Actions d'audit sensibles récentes
-SELECT u.nom_utilisateur, al.action, al.table_cible, al.timestamp
-FROM audit_log al
-JOIN utilisateurs u ON al.utilisateur_id = u.id
-WHERE al.action IN ('DELETE', 'UPDATE_USER', 'CREATE_USER')
+SELECT u.nom_utilisateur, al.action, al.table_cible, al.timestamp  
+FROM audit_log al  
+JOIN utilisateurs u ON al.utilisateur_id = u.id  
+WHERE al.action IN ('DELETE', 'UPDATE_USER', 'CREATE_USER')  
   AND al.timestamp > datetime('now', '-7 days')
 ORDER BY al.timestamp DESC;
 
@@ -2596,23 +2838,23 @@ ORDER BY al.timestamp DESC;
 SELECT name,
        (SELECT COUNT(*) FROM pragma_table_info(name)) as colonnes,
        (SELECT COUNT(*) FROM sqlite_master WHERE tbl_name = name AND type = 'index') as index_count
-FROM sqlite_master
-WHERE type = 'table'
+FROM sqlite_master  
+WHERE type = 'table'  
   AND name NOT LIKE 'sqlite_%';
 
 -- === REQUÊTES DE NETTOYAGE ===
 
 -- 1. Supprimer les anciennes tentatives de connexion
-DELETE FROM tentatives_connexion
-WHERE timestamp < datetime('now', '-30 days');
+DELETE FROM tentatives_connexion  
+WHERE timestamp < datetime('now', '-30 days');  
 
 -- 2. Supprimer les sessions expirées
-DELETE FROM sessions
-WHERE date_expiration < datetime('now');
+DELETE FROM sessions  
+WHERE date_expiration < datetime('now');  
 
 -- 3. Nettoyer les logs d'audit anciens (garder 1 an)
-DELETE FROM audit_log
-WHERE timestamp < datetime('now', '-1 year');
+DELETE FROM audit_log  
+WHERE timestamp < datetime('now', '-1 year');  
 
 -- === REQUÊTES D'URGENCE ===
 
@@ -2623,9 +2865,9 @@ UPDATE utilisateurs SET actif = 0 WHERE role != 'admin';
 DELETE FROM sessions;
 
 -- 3. Bloquer temporairement toutes les connexions depuis une IP
-INSERT INTO tentatives_connexion (nom_utilisateur, adresse_ip, succes, timestamp)
-SELECT 'BLOCKED', '192.168.1.100', 0, datetime('now')
-FROM (SELECT 1 UNION SELECT 1 UNION SELECT 1 UNION SELECT 1 UNION SELECT 1);
+INSERT INTO tentatives_connexion (nom_utilisateur, adresse_ip, succes, timestamp)  
+SELECT 'BLOCKED', '192.168.1.100', 0, datetime('now')  
+FROM (SELECT 1 UNION SELECT 1 UNION SELECT 1 UNION SELECT 1 UNION SELECT 1);  
 ```
 
 ### Formation et sensibilisation

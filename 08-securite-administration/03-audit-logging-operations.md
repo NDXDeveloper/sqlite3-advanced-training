@@ -86,21 +86,38 @@ CREATE TABLE audit_schema (
 );
 
 -- Index pour améliorer les performances des requêtes d'audit
-CREATE INDEX idx_audit_timestamp ON audit_log(timestamp);
-CREATE INDEX idx_audit_utilisateur ON audit_log(utilisateur_id);
-CREATE INDEX idx_audit_table ON audit_log(table_cible);
-CREATE INDEX idx_audit_securite_timestamp ON audit_securite(timestamp);
-CREATE INDEX idx_audit_securite_type ON audit_securite(type_evenement);
+CREATE INDEX idx_audit_timestamp ON audit_log(timestamp);  
+CREATE INDEX idx_audit_utilisateur ON audit_log(utilisateur_id);  
+CREATE INDEX idx_audit_table ON audit_log(table_cible);  
+CREATE INDEX idx_audit_securite_timestamp ON audit_securite(timestamp);  
+CREATE INDEX idx_audit_securite_type ON audit_securite(type_evenement);  
 ```
 
 ### Classe Python pour la gestion de l'audit
 
+> ⚠️ **Deux pièges à régler avant tout filtre temporel — voir aussi 8.2**  
+>  
+> 1. **DeprecationWarning Python 3.12+** : passer un `datetime` à `execute()` est déprécié.  
+> 2. **`CURRENT_TIMESTAMP` SQLite est en UTC** : `datetime.now()` Python est en local → un filtre `WHERE timestamp > ?` avec un datetime local **rate des entrées** silencieusement sur les systèmes hors UTC.  
+>  
+> L'adapter ci-dessous résout les deux problèmes. À enregistrer **une seule fois** au démarrage. Tous les rapports d'audit ci-dessous en dépendent.
+
 ```python
-import json
-import time
-import sqlite3
-from datetime import datetime
-from typing import Optional, Dict, Any
+import json  
+import time  
+import sqlite3  
+from datetime import datetime, timezone  
+from typing import Optional, Dict, Any  
+
+# Adapter datetime → "YYYY-MM-DD HH:MM:SS" en UTC (compatible CURRENT_TIMESTAMP)
+# Python 3.12+ requis et normalisation UTC obligatoire pour éviter les bugs silencieux
+def _adapter_dt_utc(d):
+    if d.tzinfo is None:
+        d = d.astimezone(timezone.utc)
+    else:
+        d = d.astimezone(timezone.utc)
+    return d.strftime("%Y-%m-%d %H:%M:%S")
+sqlite3.register_adapter(datetime, _adapter_dt_utc)
 
 class AuditManager:
     def __init__(self, chemin_base: str):
@@ -111,13 +128,55 @@ class AuditManager:
         self._creer_tables_audit()
 
     def _creer_tables_audit(self):
-        """Crée les tables d'audit si elles n'existent pas"""
+        """Crée les tables d'audit si elles n'existent pas.
+
+        Reprend le DDL présenté plus haut dans le chapitre. Idempotent
+        grâce à IF NOT EXISTS.
+        """
         conn = sqlite3.connect(self.chemin_base)
         cursor = conn.cursor()
-
-        # Exécuter les CREATE TABLE (voir ci-dessus)
-        # ... (code SQL des tables)
-
+        cursor.executescript("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                utilisateur_id INTEGER,
+                nom_utilisateur TEXT,
+                action TEXT NOT NULL,
+                table_cible TEXT,
+                enregistrement_id INTEGER,
+                anciennes_valeurs TEXT,
+                nouvelles_valeurs TEXT,
+                adresse_ip TEXT,
+                user_agent TEXT,
+                session_id TEXT,
+                duree_ms INTEGER,
+                statut TEXT DEFAULT 'SUCCESS',
+                message_erreur TEXT
+            );
+            CREATE TABLE IF NOT EXISTS audit_securite (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                type_evenement TEXT NOT NULL,
+                utilisateur_id INTEGER,
+                nom_utilisateur TEXT,
+                adresse_ip TEXT,
+                details TEXT,
+                niveau_gravite TEXT DEFAULT 'INFO'
+            );
+            CREATE TABLE IF NOT EXISTS audit_schema (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                utilisateur_id INTEGER,
+                type_operation TEXT,
+                nom_objet TEXT,
+                definition_sql TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_audit_utilisateur ON audit_log(utilisateur_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_table ON audit_log(table_cible);
+            CREATE INDEX IF NOT EXISTS idx_audit_securite_timestamp ON audit_securite(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_audit_securite_type ON audit_securite(type_evenement);
+        """)
         conn.commit()
         conn.close()
 
@@ -284,12 +343,29 @@ audit.enregistrer_evenement_securite(
 
 Les triggers permettent d'automatiser l'audit sans modifier le code applicatif :
 
+> ⚠️ **PIÈGE SQLite critique (vérifié par test)** : un trigger défini dans le schéma `main` **NE PEUT PAS** référencer une table du schéma `temp`. SQLite lève l'erreur :  
+> ```  
+> trigger audit_clients_insert cannot reference objects in database temp  
+> ```  
+> Pour avoir une attribution d'audit par session sans race condition, il faut donc utiliser :  
+> - une **TEMP TABLE** `session_actuelle` (isolation par connexion ✓)  
+> - **ET** un **TEMP TRIGGER** (un trigger temporaire peut référencer une TEMP table ✓)  
+>  
+> Conséquence : le TEMP TRIGGER doit être recréé à **chaque ouverture de connexion authentifiée** (la TEMP table aussi). Ce n'est pas idéal en termes d'overhead, mais c'est le seul moyen propre d'avoir une attribution par session avec les triggers SQLite.
+
 ```sql
--- Trigger pour auditer les insertions dans la table clients
-CREATE TRIGGER audit_clients_insert
-AFTER INSERT ON clients
-FOR EACH ROW
-BEGIN
+-- ── Sur chaque connexion authentifiée, exécuter ce setup une fois ──
+
+-- 1. TEMP TABLE pour l'utilisateur de la connexion en cours (isolation OK)
+CREATE TEMP TABLE IF NOT EXISTS session_actuelle (
+    nom_utilisateur TEXT
+);
+
+-- 2. TEMP TRIGGER d'audit INSERT (peut référencer la TEMP table)
+CREATE TEMP TRIGGER IF NOT EXISTS audit_clients_insert  
+AFTER INSERT ON clients  
+FOR EACH ROW  
+BEGIN  
     INSERT INTO audit_log (
         nom_utilisateur, action, table_cible, enregistrement_id,
         nouvelles_valeurs, timestamp
@@ -308,11 +384,11 @@ BEGIN
     );
 END;
 
--- Trigger pour auditer les modifications dans la table clients
-CREATE TRIGGER audit_clients_update
-AFTER UPDATE ON clients
-FOR EACH ROW
-BEGIN
+-- 3. TEMP TRIGGER d'audit UPDATE
+CREATE TEMP TRIGGER IF NOT EXISTS audit_clients_update  
+AFTER UPDATE ON clients  
+FOR EACH ROW  
+BEGIN  
     INSERT INTO audit_log (
         nom_utilisateur, action, table_cible, enregistrement_id,
         anciennes_valeurs, nouvelles_valeurs, timestamp
@@ -321,25 +397,17 @@ BEGIN
         'UPDATE',
         'clients',
         NEW.id,
-        json_object(
-            'nom', OLD.nom,
-            'email', OLD.email,
-            'telephone', OLD.telephone
-        ),
-        json_object(
-            'nom', NEW.nom,
-            'email', NEW.email,
-            'telephone', NEW.telephone
-        ),
+        json_object('nom', OLD.nom, 'email', OLD.email, 'telephone', OLD.telephone),
+        json_object('nom', NEW.nom, 'email', NEW.email, 'telephone', NEW.telephone),
         CURRENT_TIMESTAMP
     );
 END;
 
--- Trigger pour auditer les suppressions dans la table clients
-CREATE TRIGGER audit_clients_delete
-AFTER DELETE ON clients
-FOR EACH ROW
-BEGIN
+-- 4. TEMP TRIGGER d'audit DELETE
+CREATE TEMP TRIGGER IF NOT EXISTS audit_clients_delete  
+AFTER DELETE ON clients  
+FOR EACH ROW  
+BEGIN  
     INSERT INTO audit_log (
         nom_utilisateur, action, table_cible, enregistrement_id,
         anciennes_valeurs, timestamp
@@ -348,20 +416,15 @@ BEGIN
         'DELETE',
         'clients',
         OLD.id,
-        json_object(
-            'nom', OLD.nom,
-            'email', OLD.email,
-            'telephone', OLD.telephone
-        ),
+        json_object('nom', OLD.nom, 'email', OLD.email, 'telephone', OLD.telephone),
         CURRENT_TIMESTAMP
     );
 END;
-
--- Table temporaire pour stocker l'utilisateur de la session courante
-CREATE TABLE IF NOT EXISTS session_actuelle (
-    nom_utilisateur TEXT
-);
 ```
+
+> 💡 **Alternative architecturale si le TEMP TRIGGER par connexion vous semble lourd** :  
+> - **Audit applicatif explicite** (via `AuditManager.enregistrer_operation()` plus haut) : pas de magie SQL, attribution garantie, mais il faut penser à appeler la fonction à chaque opération.  
+> - **Table `session_actuelle` permanente keyée par PID/UUID** : un trigger persistant lit la session selon un identifiant injecté par l'application via une UDF Python `current_session_id()`. Moins de magie côté SQL, pas de TEMP triggers.
 
 ### Classe Python pour gérer l'audit automatique
 
@@ -371,144 +434,162 @@ class AuditAutomatique:
         self.chemin_base = chemin_base
         self.audit_manager = AuditManager(chemin_base)
 
-    def definir_utilisateur_session(self, nom_utilisateur: str):
-        """Définit l'utilisateur pour les triggers d'audit"""
-        conn = sqlite3.connect(self.chemin_base)
-        cursor = conn.cursor()
+    def definir_utilisateur_session(self, conn, nom_utilisateur: str):
+        """Définit l'utilisateur pour les triggers d'audit.
 
-        # Vider et définir l'utilisateur actuel
+        ⚠️ ARCHITECTURE — pourquoi cette méthode prend une connexion en
+           paramètre plutôt que d'en ouvrir une :
+           la table `session_actuelle` est une `TEMP TABLE`, donc elle
+           n'existe QUE sur la connexion qui l'a créée. Si on ouvrait une
+           nouvelle connexion ici, la table créée serait détruite à la
+           fermeture, et les requêtes ultérieures (depuis une autre
+           connexion) ne la verraient pas → les triggers attribueraient
+           toutes les actions à 'SYSTEM'.
+
+           Conséquence pratique : l'application doit garder UNE connexion
+           par session utilisateur, créer la table TEMP au moment de
+           l'authentification, puis utiliser CETTE connexion pour toutes
+           les requêtes de cet utilisateur jusqu'à sa déconnexion.
+        """
+        cursor = conn.cursor()
+        # 1. Créer la table TEMP si elle n'existe pas sur cette connexion
+        cursor.execute("""
+            CREATE TEMP TABLE IF NOT EXISTS session_actuelle (
+                nom_utilisateur TEXT
+            )
+        """)
+        # 2. Réinitialiser et définir l'utilisateur
         cursor.execute("DELETE FROM session_actuelle")
-        cursor.execute("INSERT INTO session_actuelle (nom_utilisateur) VALUES (?)",
-                      (nom_utilisateur,))
-
+        cursor.execute(
+            "INSERT INTO session_actuelle (nom_utilisateur) VALUES (?)",
+            (nom_utilisateur,)
+        )
         conn.commit()
-        conn.close()
 
-    def creer_triggers_audit_table(self, nom_table: str, colonnes_a_auditer: list):
-        """Crée automatiquement les triggers d'audit pour une table"""
-        conn = sqlite3.connect(self.chemin_base)
+    def installer_triggers_session(self, conn, nom_table: str, colonnes_a_auditer: list):
+        """Installe les TEMP triggers d'audit sur la CONNEXION fournie.
+
+        ⚠️ ARCHITECTURE — pourquoi TEMP TRIGGER plutôt que CREATE TRIGGER :
+           SQLite refuse qu'un trigger persistant (schéma `main`) référence
+           une table du schéma `temp`. Erreur : « trigger X cannot reference
+           objects in database temp ».
+           → Pour avoir une attribution par session sans race condition
+           multi-utilisateur, on doit utiliser un TEMP TRIGGER, qui peut
+           lui référencer la TEMP TABLE `session_actuelle`.
+
+        ⚠️ INJECTION SQL — `CREATE TRIGGER` n'accepte pas `?` pour les
+           identifiants. On valide donc chaque nom de table/colonne via une
+           regex stricte avant de l'interpoler.
+
+        Cette méthode doit être appelée APRÈS `definir_utilisateur_session`
+        sur la même `conn` (sinon `session_actuelle` n'existe pas encore).
+        """
+        import re
+        identifiant_pattern = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+        if not identifiant_pattern.match(nom_table):
+            raise ValueError(f"Nom de table invalide : {nom_table!r}")
+        for col in colonnes_a_auditer:
+            if not identifiant_pattern.match(col):
+                raise ValueError(f"Nom de colonne invalide : {col!r}")
+
         cursor = conn.cursor()
-
-        # Construire la liste des colonnes pour JSON
         colonnes_json = ", ".join([f"'{col}', NEW.{col}" for col in colonnes_a_auditer])
         colonnes_json_old = ", ".join([f"'{col}', OLD.{col}" for col in colonnes_a_auditer])
 
-        # Trigger INSERT
-        trigger_insert = f"""
-        CREATE TRIGGER IF NOT EXISTS audit_{nom_table}_insert
-        AFTER INSERT ON {nom_table}
-        FOR EACH ROW
-        BEGIN
-            INSERT INTO audit_log (
-                nom_utilisateur, action, table_cible, enregistrement_id,
-                nouvelles_valeurs, timestamp
-            ) VALUES (
-                COALESCE((SELECT nom_utilisateur FROM session_actuelle LIMIT 1), 'SYSTEM'),
-                'INSERT',
-                '{nom_table}',
-                NEW.id,
-                json_object({colonnes_json}),
-                CURRENT_TIMESTAMP
-            );
-        END;
-        """
+        # CREATE TEMP TRIGGER → trigger attaché à la connexion, supprimé à sa fermeture
+        cursor.executescript(f"""
+            CREATE TEMP TRIGGER IF NOT EXISTS audit_{nom_table}_insert
+            AFTER INSERT ON {nom_table}
+            FOR EACH ROW
+            BEGIN
+                INSERT INTO audit_log (
+                    nom_utilisateur, action, table_cible, enregistrement_id,
+                    nouvelles_valeurs, timestamp
+                ) VALUES (
+                    COALESCE((SELECT nom_utilisateur FROM session_actuelle LIMIT 1), 'SYSTEM'),
+                    'INSERT', '{nom_table}', NEW.id,
+                    json_object({colonnes_json}),
+                    CURRENT_TIMESTAMP
+                );
+            END;
 
-        # Trigger UPDATE
-        trigger_update = f"""
-        CREATE TRIGGER IF NOT EXISTS audit_{nom_table}_update
-        AFTER UPDATE ON {nom_table}
-        FOR EACH ROW
-        BEGIN
-            INSERT INTO audit_log (
-                nom_utilisateur, action, table_cible, enregistrement_id,
-                anciennes_valeurs, nouvelles_valeurs, timestamp
-            ) VALUES (
-                COALESCE((SELECT nom_utilisateur FROM session_actuelle LIMIT 1), 'SYSTEM'),
-                'UPDATE',
-                '{nom_table}',
-                NEW.id,
-                json_object({colonnes_json_old}),
-                json_object({colonnes_json}),
-                CURRENT_TIMESTAMP
-            );
-        END;
-        """
+            CREATE TEMP TRIGGER IF NOT EXISTS audit_{nom_table}_update
+            AFTER UPDATE ON {nom_table}
+            FOR EACH ROW
+            BEGIN
+                INSERT INTO audit_log (
+                    nom_utilisateur, action, table_cible, enregistrement_id,
+                    anciennes_valeurs, nouvelles_valeurs, timestamp
+                ) VALUES (
+                    COALESCE((SELECT nom_utilisateur FROM session_actuelle LIMIT 1), 'SYSTEM'),
+                    'UPDATE', '{nom_table}', NEW.id,
+                    json_object({colonnes_json_old}),
+                    json_object({colonnes_json}),
+                    CURRENT_TIMESTAMP
+                );
+            END;
 
-        # Trigger DELETE
-        trigger_delete = f"""
-        CREATE TRIGGER IF NOT EXISTS audit_{nom_table}_delete
-        AFTER DELETE ON {nom_table}
-        FOR EACH ROW
-        BEGIN
-            INSERT INTO audit_log (
-                nom_utilisateur, action, table_cible, enregistrement_id,
-                anciennes_valeurs, timestamp
-            ) VALUES (
-                COALESCE((SELECT nom_utilisateur FROM session_actuelle LIMIT 1), 'SYSTEM'),
-                'DELETE',
-                '{nom_table}',
-                OLD.id,
-                json_object({colonnes_json_old}),
-                CURRENT_TIMESTAMP
-            );
-        END;
-        """
-
-        # Exécuter les triggers
-        cursor.execute(trigger_insert)
-        cursor.execute(trigger_update)
-        cursor.execute(trigger_delete)
-
+            CREATE TEMP TRIGGER IF NOT EXISTS audit_{nom_table}_delete
+            AFTER DELETE ON {nom_table}
+            FOR EACH ROW
+            BEGIN
+                INSERT INTO audit_log (
+                    nom_utilisateur, action, table_cible, enregistrement_id,
+                    anciennes_valeurs, timestamp
+                ) VALUES (
+                    COALESCE((SELECT nom_utilisateur FROM session_actuelle LIMIT 1), 'SYSTEM'),
+                    'DELETE', '{nom_table}', OLD.id,
+                    json_object({colonnes_json_old}),
+                    CURRENT_TIMESTAMP
+                );
+            END;
+        """)
         conn.commit()
-        conn.close()
+        print(f"✅ TEMP triggers d'audit installés pour '{nom_table}' sur cette connexion")
 
-        print(f"✅ Triggers d'audit créés pour la table '{nom_table}'")
+    def supprimer_triggers_audit_table(self, conn, nom_table: str):
+        """Supprime les TEMP triggers d'audit pour une table sur la connexion fournie.
 
-    def supprimer_triggers_audit_table(self, nom_table: str):
-        """Supprime les triggers d'audit pour une table"""
-        conn = sqlite3.connect(self.chemin_base)
+        Note : les TEMP triggers sont automatiquement détruits à la fermeture
+        de la connexion. Cette méthode n'est utile que pour les désactiver
+        en cours de session (ex. import de masse où on veut court-circuiter
+        l'audit).
+        """
         cursor = conn.cursor()
-
-        triggers = [
-            f"audit_{nom_table}_insert",
-            f"audit_{nom_table}_update",
-            f"audit_{nom_table}_delete"
-        ]
-
-        for trigger in triggers:
-            cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
-
+        for suffixe in ('insert', 'update', 'delete'):
+            cursor.execute(f"DROP TRIGGER IF EXISTS audit_{nom_table}_{suffixe}")
         conn.commit()
-        conn.close()
+        print(f"✅ TEMP triggers d'audit supprimés pour '{nom_table}'")
 
-        print(f"✅ Triggers d'audit supprimés pour la table '{nom_table}'")
-
-# Exemple d'utilisation
+# ─── Exemple d'utilisation complet — UNE connexion par session utilisateur ───
 audit_auto = AuditAutomatique('ma_base.db')
 
-# Créer les triggers pour la table clients
-audit_auto.creer_triggers_audit_table(
+# 1. Ouvrir la connexion qui servira toute la session d'Alice
+conn = sqlite3.connect('ma_base.db')
+
+# 2. Définir l'utilisateur (crée la TEMP TABLE session_actuelle sur conn)
+audit_auto.definir_utilisateur_session(conn, 'alice')
+
+# 3. Installer les TEMP triggers sur conn (DOIT venir APRÈS définir_utilisateur_session
+#    car les triggers référencent session_actuelle qui doit déjà exister)
+audit_auto.installer_triggers_session(
+    conn,
     'clients',
     ['nom', 'email', 'telephone', 'date_creation']
 )
 
-# Définir l'utilisateur actuel
-audit_auto.definir_utilisateur_session('alice')
-
-# Maintenant, toutes les modifications de la table clients seront auditées automatiquement
-conn = sqlite3.connect('ma_base.db')
-cursor = conn.cursor()
-
-# Cette insertion sera automatiquement auditée
-cursor.execute("""
+# 4. Toutes les modifications faites via CETTE connexion sont auditées comme 'alice'
+cursor = conn.cursor()  
+cursor.execute("""  
     INSERT INTO clients (nom, email, telephone)
     VALUES ('Test Client', 'test@email.com', '0123456789')
 """)
-
 conn.commit()
+
+# 5. Fin de session : fermer la connexion détruit TEMP TABLE + TEMP TRIGGERS
 conn.close()
 
-print("✅ Insertion effectuée et auditée automatiquement")
+print("✅ Insertion effectuée et auditée comme 'alice'")
 ```
 
 ## Logging des performances et erreurs
@@ -516,10 +597,10 @@ print("✅ Insertion effectuée et auditée automatiquement")
 ### Système de logging des performances
 
 ```python
-import time
-import logging
-from contextlib import contextmanager
-from functools import wraps
+import time  
+import logging  
+from contextlib import contextmanager  
+from functools import wraps  
 
 class SQLitePerformanceLogger:
     def __init__(self, chemin_base: str, seuil_lent_ms: int = 1000):
@@ -688,10 +769,10 @@ except Exception as e:
 ### Générateur de rapports d'audit
 
 ```python
-import sqlite3
-import json
-from datetime import datetime, timedelta
-from collections import defaultdict
+import sqlite3  
+import json  
+from datetime import datetime, timedelta  
+from collections import defaultdict  
 
 class RapportAudit:
     def __init__(self, chemin_base: str):
@@ -1029,11 +1110,11 @@ class RapportAudit:
 # Utilisation des rapports
 rapport = RapportAudit('ma_base.db')
 
-print("=== GÉNÉRATION DES RAPPORTS D'AUDIT ===")
-rapport.generer_rapport_activite(7)
-rapport.generer_rapport_securite(30)
-rapport.generer_rapport_performance(7)
-anomalies = rapport.detecter_anomalies()
+print("=== GÉNÉRATION DES RAPPORTS D'AUDIT ===")  
+rapport.generer_rapport_activite(7)  
+rapport.generer_rapport_securite(30)  
+rapport.generer_rapport_performance(7)  
+anomalies = rapport.detecter_anomalies()  
 ```
 
 ## Intégration avec des outils de monitoring externes
@@ -1041,9 +1122,10 @@ anomalies = rapport.detecter_anomalies()
 ### Export vers des formats standards
 
 ```python
-import csv
-import json
-from datetime import datetime
+import csv  
+import json  
+import sqlite3  
+from datetime import datetime, timedelta  
 
 class ExporteurAudit:
     def __init__(self, chemin_base: str):
@@ -1182,18 +1264,27 @@ class ExporteurAudit:
 # Utilisation des exportateurs
 exporteur = ExporteurAudit('ma_base.db')
 
-print("=== EXPORT DES DONNÉES D'AUDIT ===")
-exporteur.exporter_csv('audit_export.csv', 30)
-exporteur.exporter_json('audit_export.json', 30)
-exporteur.generer_metriques_prometheus('sqlite_metrics.prom')
+print("=== EXPORT DES DONNÉES D'AUDIT ===")  
+exporteur.exporter_csv('audit_export.csv', 30)  
+exporteur.exporter_json('audit_export.json', 30)  
+exporteur.generer_metriques_prometheus('sqlite_metrics.prom')  
 ```
 
 ### Intégration avec des systèmes de log centralisés
 
 ```python
-import requests
-import syslog
-from datetime import datetime
+import requests  
+import sqlite3  
+import json  
+from datetime import datetime  
+
+# ⚠️ `syslog` est UNIX-only (Linux/macOS). Sur Windows, importer conditionnellement
+#     ou utiliser `logging.handlers.SysLogHandler` (TCP/UDP vers serveur syslog distant).
+try:
+    import syslog
+    SYSLOG_DISPONIBLE = True
+except ImportError:
+    SYSLOG_DISPONIBLE = False
 
 class IntegrationMonitoring:
     def __init__(self, chemin_base: str):
@@ -1251,7 +1342,16 @@ class IntegrationMonitoring:
         print(f"✅ {logs_envoyes} logs envoyés vers Elasticsearch")
 
     def envoyer_vers_syslog(self, serveur_syslog: str = 'localhost', port: int = 514):
-        """Envoie les événements critiques vers syslog"""
+        """Envoie les événements critiques vers syslog (Unix uniquement).
+
+        ⚠️ Note : le module `syslog` est UNIX-only. Sur Windows, utiliser
+        `logging.handlers.SysLogHandler` pour envoyer en TCP/UDP vers un
+        serveur syslog distant (plus portable de toute façon).
+        """
+        if not SYSLOG_DISPONIBLE:
+            print("⚠️ Module syslog non disponible (Windows ?). "
+                  "Utilisez logging.handlers.SysLogHandler à la place.")
+            return
         syslog.openlog("sqlite_audit", syslog.LOG_PID, syslog.LOG_LOCAL0)
 
         conn = sqlite3.connect(self.chemin_base)
@@ -1365,8 +1465,8 @@ print("Configuration monitoring disponible - adaptez les URL selon votre infrast
 ### Nettoyage automatique des logs
 
 ```python
-from datetime import datetime, timedelta
-import os
+from datetime import datetime, timedelta  
+import os  
 
 class MaintenanceLogs:
     def __init__(self, chemin_base: str):
@@ -1464,14 +1564,21 @@ class MaintenanceLogs:
         """Optimise la base de données d'audit"""
         print("⚡ Optimisation de la base d'audit...")
 
-        conn = sqlite3.connect(self.chemin_base)
+        # ⚠️ VACUUM ne peut PAS s'exécuter dans une transaction. Le module
+        #    sqlite3 de Python ouvre une transaction implicite par défaut
+        #    (isolation_level=""). Solution : passer isolation_level=None
+        #    OU faire conn.commit() juste avant chaque VACUUM.
+        conn = sqlite3.connect(self.chemin_base, isolation_level=None)
         cursor = conn.cursor()
 
         # Analyser la taille avant optimisation
-        cursor.execute("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()")
-        taille_avant = cursor.fetchone()[0]
+        page_count = cursor.execute("PRAGMA page_count").fetchone()[0]
+        page_size = cursor.execute("PRAGMA page_size").fetchone()[0]
+        taille_avant = page_count * page_size
 
         # Exécuter l'optimisation
+        # ⚠️ VACUUM nécessite ~2× l'espace disque libre (réécrit toute la base)
+        #    et acquiert un verrou exclusif. À éviter sur très grosses bases.
         print("   🔄 VACUUM en cours...")
         cursor.execute("VACUUM")
 
@@ -1482,8 +1589,8 @@ class MaintenanceLogs:
         cursor.execute("PRAGMA optimize")
 
         # Analyser la taille après optimisation
-        cursor.execute("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()")
-        taille_apres = cursor.fetchone()[0]
+        page_count = cursor.execute("PRAGMA page_count").fetchone()[0]
+        taille_apres = page_count * page_size
 
         espace_libere = taille_avant - taille_apres
         pourcentage = (espace_libere / taille_avant) * 100 if taille_avant > 0 else 0
@@ -1501,13 +1608,19 @@ class MaintenanceLogs:
         cursor = conn.cursor()
 
         # Vérification générale
+        # ⚠️ PRAGMA integrity_check peut retourner PLUSIEURS lignes en cas
+        #    de corruption (une par problème détecté, jusqu'à 100 par défaut).
+        #    Il faut donc utiliser fetchall(), sinon les corruptions suivantes
+        #    sont ignorées. Une base saine renvoie une seule ligne 'ok'.
         cursor.execute("PRAGMA integrity_check")
-        resultat_integrite = cursor.fetchone()[0]
+        lignes_integrite = [row[0] for row in cursor.fetchall()]
 
-        if resultat_integrite == 'ok':
+        if lignes_integrite == ['ok']:
             print("   ✅ Intégrité générale: OK")
         else:
-            print(f"   ❌ Problème d'intégrité: {resultat_integrite}")
+            print(f"   ❌ Problèmes d'intégrité ({len(lignes_integrite)} signalements) :")
+            for ligne in lignes_integrite:
+                print(f"      → {ligne}")
 
         # Vérifications spécifiques aux logs
         verifications = []
@@ -1593,12 +1706,19 @@ class SchedulerMaintenance:
         # 1. Vérification d'intégrité immédiate
         self.maintenance.verifier_integrite_logs()
 
-        # 2. Sauvegarde d'urgence
-        import shutil
+        # 2. Sauvegarde d'urgence — ⚠️ utiliser l'API .backup() de SQLite
+        #    et NON shutil.copy/cp (qui peut corrompre une base en cours
+        #    d'utilisation si une transaction est en vol).
+        from contextlib import closing
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         backup_path = f"{self.maintenance.chemin_base}.emergency_backup_{timestamp}"
-        shutil.copy2(self.maintenance.chemin_base, backup_path)
-        print(f"   💾 Sauvegarde d'urgence: {backup_path}")
+        try:
+            with closing(sqlite3.connect(self.maintenance.chemin_base)) as src, \
+                 closing(sqlite3.connect(backup_path)) as dst:
+                src.backup(dst)
+            print(f"   💾 Sauvegarde d'urgence: {backup_path}")
+        except Exception as e:
+            print(f"   ❌ Échec sauvegarde : {e}")
 
         # 3. Nettoyage agressif si nécessaire
         self.maintenance.nettoyer_logs_anciens(30)  # Plus agressif
@@ -1608,8 +1728,8 @@ class SchedulerMaintenance:
 # Utilisation de la maintenance automatisée
 scheduler = SchedulerMaintenance('ma_base.db')
 
-print("=== DÉMONSTRATION MAINTENANCE ===")
-scheduler.maintenance_quotidienne()
+print("=== DÉMONSTRATION MAINTENANCE ===")  
+scheduler.maintenance_quotidienne()  
 ```
 
 ## Configuration avancée de l'audit
@@ -1617,8 +1737,8 @@ scheduler.maintenance_quotidienne()
 ### Système d'audit configurable par règles
 
 ```python
-import yaml
-from typing import Dict, List
+import yaml  
+from typing import Dict, List  
 
 class ConfigurationAudit:
     def __init__(self, chemin_config: str = 'audit_config.yaml'):
@@ -1674,11 +1794,27 @@ class ConfigurationAudit:
             }
         }
 
+        def _fusion_profonde(defaut, surcouche):
+            """Fusion récursive : la surcouche complète le défaut sans
+            l'écraser pour les sous-dictionnaires."""
+            if not isinstance(surcouche, dict):
+                return surcouche if surcouche is not None else defaut
+            resultat = dict(defaut)
+            for cle, valeur in surcouche.items():
+                if cle in resultat and isinstance(resultat[cle], dict):
+                    resultat[cle] = _fusion_profonde(resultat[cle], valeur)
+                else:
+                    resultat[cle] = valeur
+            return resultat
+
         try:
             with open(self.chemin_config, 'r', encoding='utf-8') as f:
-                config_fichier = yaml.safe_load(f)
-                # Fusionner avec la config par défaut
-                return {**config_defaut, **config_fichier}
+                config_fichier = yaml.safe_load(f) or {}
+                # ⚠️ Une fusion superficielle ({**a, **b}) écraserait
+                #    entièrement des sous-dictionnaires comme `tables_auditees`.
+                #    Si l'utilisateur ne définit qu'une seule table dans son
+                #    YAML, toutes les autres tables par défaut disparaîtraient.
+                return _fusion_profonde(config_defaut, config_fichier)
         except FileNotFoundError:
             print(f"⚠️ Fichier de config non trouvé, création de {self.chemin_config}")
             self._sauvegarder_configuration(config_defaut)
@@ -1896,8 +2032,8 @@ audit_avance.enregistrer_operation_conditionnelle(
 )
 
 # Vérifier les alertes
-alertes = audit_avance.verifier_alertes()
-if alertes:
+alertes = audit_avance.verifier_alertes()  
+if alertes:  
     print(f"⚠️ {len(alertes)} alertes déclenchées")
 else:
     print("✅ Aucune alerte")
@@ -1908,9 +2044,9 @@ else:
 ### Reconstruction d'événements
 
 ```python
-from datetime import datetime, timedelta
-import networkx as nx
-import matplotlib.pyplot as plt
+from datetime import datetime, timedelta  
+import networkx as nx  
+import matplotlib.pyplot as plt  
 
 class AnalyseForensique:
     def __init__(self, chemin_base: str):
@@ -1975,20 +2111,22 @@ class AnalyseForensique:
             if record_id:
                 print(f"     🆔 Enregistrement: {record_id}")
 
-            # Afficher les changements
+            # Afficher les changements (les JSON peuvent être tronqués/malformés
+            # si la base a été altérée manuellement → on cible json.JSONDecodeError
+            # plutôt qu'un except: nu qui masquerait aussi KeyboardInterrupt).
             if action in ['UPDATE', 'DELETE'] and old_vals:
                 try:
                     old_data = json.loads(old_vals)
                     print(f"     📤 Avant: {old_data}")
-                except:
-                    pass
+                except json.JSONDecodeError:
+                    print(f"     📤 Avant (JSON invalide): {old_vals[:80]}")
 
             if action in ['INSERT', 'UPDATE'] and new_vals:
                 try:
                     new_data = json.loads(new_vals)
                     print(f"     📥 Après: {new_data}")
-                except:
-                    pass
+                except json.JSONDecodeError:
+                    print(f"     📥 Après (JSON invalide): {new_vals[:80]}")
 
             print()
 
@@ -2416,14 +2554,20 @@ class ConformiteReglementaire:
         score_conformite = 0
         issues = []
 
-        # Scoring RGPD
+        # Scoring RGPD (chaque critère vaut 25 points, total visé : 100)
+        # ⚠️ Ce barème pédagogique simpliste doit être adapté au contexte
+        #    réel : un score parfait ici ne prouve PAS la conformité légale.
         if acces_donnees_perso > 0:
             score_conformite += 25
         else:
             issues.append("Aucun accès aux données personnelles tracé")
 
-        if suppressions_rgpd >= 0:  # Au moins 0 (table existe)
+        # Vérifier que la table audit_log existe et contient des données
+        #   (signe minimal que le mécanisme d'audit est actif)
+        if suppressions_rgpd > 0:
             score_conformite += 25
+        else:
+            issues.append("Aucune suppression RGPD tracée sur la période")
 
         return {
             'score': score_conformite,
@@ -2638,13 +2782,13 @@ class ConformiteReglementaire:
 # Utilisation des rapports de conformité
 conformite = ConformiteReglementaire('ma_base.db')
 
-print("=== RAPPORTS DE CONFORMITÉ RÉGLEMENTAIRE ===")
-conformite.rapport_rgpd(30)
-conformite.rapport_sox(90)
+print("=== RAPPORTS DE CONFORMITÉ RÉGLEMENTAIRE ===")  
+conformite.rapport_rgpd(30)  
+conformite.rapport_sox(90)  
 
 # Générer le rapport complet
-rapport_complet = conformite.generer_rapport_complet('json')
-print(f"📊 Score global moyen: {sum([r['score'] for r in rapport_complet['conformite'].values()]) / 3:.1f}/100")
+rapport_complet = conformite.generer_rapport_complet('json')  
+print(f"📊 Score global moyen: {sum([r['score'] for r in rapport_complet['conformite'].values()]) / 3:.1f}/100")  
 ```
 
 ## Conclusion et bonnes pratiques
@@ -2680,14 +2824,14 @@ L'audit et le logging dans SQLite nécessitent une approche méthodique et bien 
 
 ```sql
 -- Optimisations de performance pour les tables d'audit
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA cache_size = 10000;
+PRAGMA journal_mode = WAL;  
+PRAGMA synchronous = NORMAL;  
+PRAGMA cache_size = 10000;  
 
 -- Index spécialisés pour l'audit
-CREATE INDEX idx_audit_user_date ON audit_log(nom_utilisateur, timestamp);
-CREATE INDEX idx_audit_table_action ON audit_log(table_cible, action);
-CREATE INDEX idx_audit_record ON audit_log(table_cible, enregistrement_id);
+CREATE INDEX idx_audit_user_date ON audit_log(nom_utilisateur, timestamp);  
+CREATE INDEX idx_audit_table_action ON audit_log(table_cible, action);  
+CREATE INDEX idx_audit_record ON audit_log(table_cible, enregistrement_id);  
 ```
 
 #### **🚨 Alertes critiques à configurer**
@@ -2756,7 +2900,7 @@ kpi_audit = {
 - **Standards de conformité** : GDPR, SOX, ISO 27001, HIPAA
 - **Outils de SIEM** : Splunk, ELK Stack, Graylog
 - **Frameworks d'audit** : COBIT, NIST Cybersecurity Framework
-- **Bibliothèques Python** : `logging`, `audit-log`, `python-audit`
+- **Bibliothèques Python** : `logging` (stdlib), `structlog` (logging structuré), `python-json-logger` (logs JSON)
 
 L'audit et le logging constituent la fondation de la sécurité et de la conformité de votre application SQLite. Un système bien conçu vous permettra non seulement de répondre aux exigences réglementaires, mais aussi d'améliorer continuellement la sécurité et les performances de votre application.
 

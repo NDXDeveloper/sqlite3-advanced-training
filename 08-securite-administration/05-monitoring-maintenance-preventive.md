@@ -42,11 +42,11 @@ Le monitoring et la maintenance préventive sont essentiels pour maintenir votre
 ### 1. Métriques de performance
 
 ```python
-import sqlite3
-import time
-import os
-from datetime import datetime
-from collections import defaultdict
+import sqlite3  
+import time  
+import os  
+from datetime import datetime  
+from collections import defaultdict  
 
 class MonitoringPerformance:
     def __init__(self, chemin_base):
@@ -264,10 +264,10 @@ snapshot = monitor.snapshot_complet()
 ### 2. Surveillance de l'intégrité
 
 ```python
-import sqlite3
-import hashlib
-import json
-from datetime import datetime, timedelta
+import sqlite3  
+import hashlib  
+import json  
+from datetime import datetime, timedelta  
 
 class MonitoringIntegrite:
     def __init__(self, chemin_base):
@@ -531,12 +531,13 @@ rapport = monitor_integrite.generer_rapport_integrite()
 ### 3. Surveillance des performances système
 
 ```python
-import psutil
-import sqlite3
-import threading
-import time
-from collections import deque
-from datetime import datetime
+import psutil  
+import sqlite3  
+import threading  
+import time  
+import os  
+from collections import deque  
+from datetime import datetime, timedelta  
 
 class MonitoringSysteme:
     def __init__(self, chemin_base):
@@ -603,10 +604,12 @@ class MonitoringSysteme:
             cursor.fetchone()
 
             # Test d'écriture rapide (si possible)
+            # `except:` nu attraperait aussi KeyboardInterrupt / SystemExit :
+            # on cible Exception pour garder ces signaux atteignables.
             try:
                 cursor.execute("PRAGMA quick_check")
                 verification_ok = True
-            except:
+            except Exception:
                 verification_ok = False
 
             conn.close()
@@ -804,16 +807,16 @@ monitor_systeme = MonitoringSysteme('ma_base.db')
 print("\n=== DÉMONSTRATION MONITORING SYSTÈME ===")
 
 # Mesurer une fois
-metriques = monitor_systeme.mesurer_utilisation_ressources()
-if 'erreur' not in metriques:
+metriques = monitor_systeme.mesurer_utilisation_ressources()  
+if 'erreur' not in metriques:  
     print("📊 Métriques système actuelles:")
     print(f"   🖥️ CPU: {metriques['cpu_percent']:.1f}%")
     print(f"   💾 Mémoire: {metriques['memoire_utilisee_percent']:.1f}%")
     print(f"   💽 Disque: {metriques['disque_utilise_percent']:.1f}%")
 
 # Vérifier les verrous
-verrous = monitor_systeme.verifier_verrous_base()
-print(f"🔒 Statut verrous: {verrous['statut']} ({verrous.get('duree_connexion_ms', 0):.1f}ms)")
+verrous = monitor_systeme.verifier_verrous_base()  
+print(f"🔒 Statut verrous: {verrous['statut']} ({verrous.get('duree_connexion_ms', 0):.1f}ms)")  
 ```
 
 ## Maintenance préventive automatisée
@@ -821,12 +824,12 @@ print(f"🔒 Statut verrous: {verrous['statut']} ({verrous.get('duree_connexion_
 ### Système de maintenance intelligente
 
 ```python
-import sqlite3
-import os
-import time
-import schedule
-from datetime import datetime, timedelta
-from enum import Enum
+import sqlite3  
+import os  
+import time  
+import schedule  
+from datetime import datetime, timedelta  
+from enum import Enum  
 
 class NiveauMaintenance(Enum):
     LEGER = "leger"
@@ -1075,10 +1078,15 @@ class MaintenancePreventive:
             resultats['operations'].extend(maintenance_standard['operations'])
 
             # 2. VACUUM (la plus longue opération)
+            # ⚠️ VACUUM ne peut PAS s'exécuter dans une transaction. Le module
+            #    sqlite3 Python (isolation_level="") ouvre une transaction
+            #    implicite avant le 1er DML. Solution : isolation_level=None.
+            # ⚠️ VACUUM nécessite aussi ~2× l'espace disque libre car il
+            #    réécrit toute la base, et acquiert un verrou exclusif.
             print("🗜️ Étape 2: VACUUM (peut prendre du temps)...")
             debut = time.time()
 
-            conn = sqlite3.connect(self.chemin_base)
+            conn = sqlite3.connect(self.chemin_base, isolation_level=None)
             cursor = conn.cursor()
 
             # Mesurer l'espace avant VACUUM
@@ -1101,24 +1109,30 @@ class MaintenancePreventive:
             print(f"   ✅ VACUUM terminé ({duree:.1f}s, {espace_libere/(1024*1024):.1f}MB libérés)")
 
             # 3. Vérification finale d'intégrité
+            # ⚠️ integrity_check peut renvoyer plusieurs lignes : fetchall()
+            #    obligatoire pour ne pas masquer des corruptions multiples.
             print("🔍 Étape 3: Vérification intégrité finale...")
             debut = time.time()
             cursor.execute("PRAGMA integrity_check")
-            check_result = cursor.fetchone()[0]
+            lignes_integrite = [row[0] for row in cursor.fetchall()]
             duree = time.time() - debut
 
+            integrite_ok = lignes_integrite == ['ok']
             resultats['operations'].append({
                 'operation': 'integrity_check',
                 'duree_s': duree,
-                'statut': 'OK' if check_result == 'ok' else 'ERREUR',
-                'resultat': check_result
+                'statut': 'OK' if integrite_ok else 'ERREUR',
+                'resultat': lignes_integrite[0] if lignes_integrite else 'aucun résultat',
+                'nb_signalements': len(lignes_integrite)
             })
 
-            if check_result == 'ok':
+            if integrite_ok:
                 print(f"   ✅ Intégrité vérifiée ({duree:.1f}s)")
             else:
-                print(f"   ❌ Problème d'intégrité: {check_result}")
-                resultats['erreurs'].append(f"Intégrité: {check_result}")
+                print(f"   ❌ {len(lignes_integrite)} problème(s) d'intégrité :")
+                for ligne in lignes_integrite[:5]:
+                    print(f"      • {ligne}")
+                    resultats['erreurs'].append(f"Intégrité: {ligne}")
 
             conn.close()
 
@@ -1153,7 +1167,14 @@ class MaintenancePreventive:
             return self.executer_maintenance_legere()
 
     def planifier_maintenance_automatique(self):
-        """Planifie la maintenance automatique"""
+        """Planifie la maintenance automatique.
+
+        ⚠️ La bibliothèque `schedule` ne supporte PAS la planification
+           mensuelle native (pas de `.month`) car les mois ont des durées
+           variables. Pour le mensuel, on garde un wrapper qui vérifie le
+           jour du mois lors d'une exécution quotidienne — alternative :
+           utiliser un vrai cron / APScheduler / systemd timer.
+        """
         print("📅 Planification de la maintenance automatique...")
 
         # Maintenance légère quotidienne à 3h
@@ -1162,8 +1183,13 @@ class MaintenancePreventive:
         # Maintenance standard hebdomadaire le dimanche à 2h
         schedule.every().sunday.at("02:00").do(self.executer_maintenance_standard)
 
-        # Maintenance complète mensuelle le 1er du mois à 1h
-        schedule.every().month.do(self.executer_maintenance_complete)
+        # Maintenance complète mensuelle : vérification quotidienne à 1h,
+        # qui ne lance la maintenance que le 1er du mois.
+        def maintenance_si_premier_du_mois():
+            if datetime.now().day == 1:
+                self.executer_maintenance_complete()
+
+        schedule.every().day.at("01:00").do(maintenance_si_premier_du_mois)
 
         print("✅ Planning configuré:")
         print("   • Légère: tous les jours à 03:00")
@@ -1251,11 +1277,12 @@ rapport = maintenance.generer_rapport_maintenance()
 ### Interface de monitoring en temps réel
 
 ```python
-import json
-import time
-from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify
-import threading
+import json  
+import time  
+import os  
+import threading  
+from datetime import datetime, timedelta  
+from flask import Flask, render_template, jsonify  
 
 class DashboardMonitoring:
     def __init__(self, bases_a_monitorer):
@@ -1386,7 +1413,7 @@ class DashboardMonitoring:
                     donnees_base['statut_global'] = 'CRITIQUE'
                     alertes_globales.append(f"{nom_base}: Maintenance urgente requise")
 
-    except Exception as e:
+            except Exception as e:
                 donnees_base['statut_global'] = 'ERREUR'
                 donnees_base['erreur'] = str(e)
                 alertes_globales.append(f"{nom_base}: Erreur monitoring ({str(e)})")
@@ -1700,12 +1727,12 @@ if __name__ == "__main__":
 ### Système d'alertes avancé
 
 ```python
-import smtplib
-import requests
-import json
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from datetime import datetime
+import smtplib  
+import requests  
+import json  
+from email.mime.text import MIMEText  
+from email.mime.multipart import MIMEMultipart  
+from datetime import datetime, timedelta  
 
 class SystemeAlertes:
     def __init__(self, config_alertes):
@@ -1837,10 +1864,10 @@ class SystemeAlertes:
             body = f"""
 {emoji_niveau.get(alerte['niveau'], '❓')} ALERTE SQLite {alerte['niveau']}
 
-Base de données: {alerte['base']}
-Type: {alerte['type']}
-Message: {alerte['message']}
-Timestamp: {alerte['timestamp']}
+Base de données: {alerte['base']}  
+Type: {alerte['type']}  
+Message: {alerte['message']}  
+Timestamp: {alerte['timestamp']}  
 
 Détails techniques:
 {json.dumps(alerte, indent=2, default=str)}
@@ -2021,8 +2048,8 @@ donnees_test = {
 }
 
 # Évaluer les alertes
-alertes = systeme_alertes.evaluer_alertes(donnees_test)
-print(f"\n📊 {len(alertes)} alertes générées")
+alertes = systeme_alertes.evaluer_alertes(donnees_test)  
+print(f"\n📊 {len(alertes)} alertes générées")  
 
 # Générer un rapport
 rapport = systeme_alertes.generer_rapport_alertes(7)
@@ -2303,13 +2330,18 @@ outils_recommandes = {
         'elasticsearch',     # Recherche logs
     ],
     'alertes': [
-        'smtplib',          # Email
-        'twilio',           # SMS
-        'slack_sdk',        # Slack
-        'pagerduty',        # Escalade
+        'smtplib',          # Email (stdlib, pas d'installation)
+        'twilio',           # SMS / vocal
+        'slack_sdk',        # Slack (officiel)
+        'pdpyras',          # PagerDuty (client officiel REST)
     ]
 }
 ```
+
+> 💡 **Choix d'outils en 2026** : pour une infrastructure SQLite distribuée légère,  
+> regardez aussi **OpenTelemetry** (OTLP collector → backend de votre choix) plutôt  
+> qu'un agent dédié par outil. Pour les bases en bordure (edge/IoT), **vector.dev**  
+> en remplacement de logstash/fluentd reste très performant en 2026.
 
 Le monitoring et la maintenance préventive transforment votre approche de SQLite d'une gestion réactive à une gestion proactive. Investir dans ces outils et processus vous fait économiser du temps, évite les pannes critiques et améliore significativement la fiabilité de vos applications.
 
